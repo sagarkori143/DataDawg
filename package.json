@@ -1,0 +1,32 @@
+{
+  "name": "ollive",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Lightweight inference logging and ingestion system for LLM applications",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "examples/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "build:watch": "tsc -b --watch",
+    "clean": "tsc -b --clean",
+    "typecheck": "tsc -b --dry",
+    "db:migrate": "npm run migrate --workspace @ollive/db",
+    "db:reset": "npm run reset --workspace @ollive/db",
+    "dev": "npm run build && concurrently -n web,ingest -c cyan,magenta \"npm:dev:web\" \"npm:dev:ingest\"",
+    "dev:web": "npm run dev --workspace @ollive/web",
+    "dev:ingest": "npm run dev --workspace @ollive/ingest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
