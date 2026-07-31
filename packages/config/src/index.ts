@@ -55,20 +55,30 @@ function findEnvFile(from: string): string | null {
 }
 
 /**
- * Load `.env` into `process.env`.
+ * Load `.env` into `process.env`, if one exists.
  *
- * Only outside production. In production the environment is injected by the
- * platform (Vercel, a container runtime, k8s Secrets) and a `.env` inside the
- * image would be both redundant and a way to ship a credential by accident.
+ * Deliberately *not* gated on NODE_ENV. Two things make that safe, and the
+ * combination is what matters:
+ *
+ *   1. dotenv never overwrites a variable that is already set. On Vercel, in a
+ *      container, or under k8s, the platform's injected environment always
+ *      wins — a stray `.env` cannot shadow real configuration.
+ *   2. `.env` is gitignored and not copied into any image, so in a real
+ *      deployment there is no file to find and this is a no-op.
+ *
+ * The earlier version skipped loading whenever NODE_ENV=production, which
+ * sounds prudent and is actually a footgun: `next start` and `node dist/…` both
+ * set NODE_ENV=production locally, so running your own build on your own
+ * machine silently saw no configuration at all. Correct-looking gate, wrong
+ * behaviour — the guarantee we want comes from precedence, not from refusing
+ * to read the file.
  */
 function ensureDotenv(): void {
   if (dotenvLoaded) return
   dotenvLoaded = true
 
-  if (process.env.NODE_ENV === 'production') return
-
   const path = findEnvFile(process.cwd())
-  if (path) loadDotenv({ path, quiet: true })
+  if (path) loadDotenv({ path, quiet: true, override: false })
 }
 
 /** Turn Zod issues into something a human can act on without reading the schema. */
