@@ -15,6 +15,12 @@
     },
     {
       "path": "./packages/providers"
+    },
+    {
+      "path": "./packages/ingest-core"
+    },
+    {
+      "path": "./apps/ingest"
     }
   ]
 }

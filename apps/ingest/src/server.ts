@@ -1,0 +1,174 @@
+import { ingestServerConfig, runtimeConfig, telemetryConfig } from '@ollive/config'
+import { closePool, events, ping } from '@ollive/db'
+import { checkAuth, handleBatch } from '@ollive/ingest-core'
+import Fastify from 'fastify'
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * INGESTION SERVICE
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * A real, separate process listening on its own port. That matters for the
+ * demo: it proves the SDK genuinely serialises events and sends them over the
+ * network, rather than calling a function in the same process and calling it a
+ * pipeline.
+ *
+ * All the logic lives in @ollive/ingest-core. This file is transport, auth,
+ * lifecycle, and nothing else.
+ */
+
+const cfg = ingestServerConfig()
+const runtime = runtimeConfig()
+const telemetry = telemetryConfig()
+
+const app = Fastify({
+  logger: {
+    level: runtime.logLevel === 'silent' ? 'silent' : runtime.logLevel,
+    // Structured JSON to stdout. Never a file — this is what every container
+    // runtime and log shipper already collects, and it costs nothing now.
+    ...(runtime.isProduction ? {} : { transport: undefined }),
+  },
+  bodyLimit: cfg.maxBodyBytes,
+  // Trust the proxy's forwarded headers when deployed behind one.
+  trustProxy: true,
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Health
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Liveness: is this process alive?
+ *
+ * Deliberately does NOT touch the database. Wiring liveness to a dependency is
+ * the classic way to turn a brief database blip into a restart loop — the
+ * orchestrator kills every replica for being "unhealthy" when the process was
+ * fine and the database was the problem.
+ */
+app.get('/healthz', async () => ({ status: 'ok', uptime: process.uptime() }))
+
+/**
+ * Readiness: can this process serve traffic?
+ *
+ * This one does check the database, because an instance that cannot write is
+ * useless as an ingestion endpoint. Returning 503 takes it out of rotation
+ * without restarting it.
+ */
+app.get('/readyz', async (_req, reply) => {
+  const dbOk = await ping()
+  if (!dbOk) return reply.code(503).send({ status: 'degraded', database: false })
+  return { status: 'ok', database: true }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ingestion
+// ─────────────────────────────────────────────────────────────────────────────
+
+app.post('/v1/events', async (req, reply) => {
+  if (!checkAuth(req.headers.authorization, cfg.apiKey)) {
+    // 401 is non-retryable by design — the SDK trips a circuit breaker rather
+    // than hammering the endpoint with a key that will still be wrong later.
+    return reply.code(401).send({ error: 'invalid or missing credentials' })
+  }
+
+  try {
+    const result = await handleBatch(req.body, {
+      redactionMode: telemetry.redaction,
+      previewChars: telemetry.previewChars,
+    })
+
+    // 202, not 200. 200 claims the write is complete; 202 says "received, and
+    // it is my responsibility now" — which stays true if an event bus is
+    // inserted behind this later.
+    return reply.code(202).send(result)
+  } catch (err) {
+    // A persistence failure is transient and affects the whole batch. 503 tells
+    // the SDK to retry with backoff, which its idempotency key makes safe.
+    req.log.error({ err }, 'batch persistence failed')
+    return reply.code(503).send({ error: 'temporarily unable to persist' })
+  }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dead letter queue
+// ─────────────────────────────────────────────────────────────────────────────
+
+app.get('/v1/dlq', async (req, reply) => {
+  if (!checkAuth(req.headers.authorization, cfg.apiKey)) {
+    return reply.code(401).send({ error: 'invalid or missing credentials' })
+  }
+  return { items: await events.listDlq(100) }
+})
+
+app.post('/v1/dlq/replay', async (req, reply) => {
+  if (!checkAuth(req.headers.authorization, cfg.apiKey)) {
+    return reply.code(401).send({ error: 'invalid or missing credentials' })
+  }
+
+  // Replay re-drives parked events through the same path that rejected them.
+  // Worth building rather than deferring: without it the DLQ is a graveyard,
+  // and "we keep the bad ones" is only meaningful if you can act on them.
+  const items = await events.listDlq(100)
+  const replayed: string[] = []
+
+  for (const item of items) {
+    try {
+      const payload = item.payload as { events?: unknown[] }
+      const body = Array.isArray(payload?.events)
+        ? payload
+        : { sdk: { name: 'replay', version: '0' }, sentAt: new Date().toISOString(), events: [item.payload] }
+
+      const out = await handleBatch(body, {
+        redactionMode: telemetry.redaction,
+        previewChars: telemetry.previewChars,
+      })
+      if (out.accepted > 0 || out.duplicates > 0) replayed.push(item.id)
+    } catch {
+      // Still broken. Leave it parked rather than looping.
+    }
+  }
+
+  await events.markDlqReplayed(replayed)
+  return { attempted: items.length, replayed: replayed.length }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lifecycle
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Graceful shutdown.
+ *
+ * SIGTERM is what a container runtime sends before SIGKILL. Stop accepting new
+ * connections, let in-flight requests finish, close the pool, exit. Without
+ * this, every deploy drops whatever was mid-write — invisible loss that looks
+ * like a small traffic dip rather than a bug.
+ *
+ * Bounded, because a shutdown that hangs waiting on a dead dependency is worse
+ * than an abrupt one: the orchestrator SIGKILLs it anyway, just later.
+ */
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.once(signal, () => {
+    app.log.info({ signal }, 'shutting down')
+
+    const forceExit = setTimeout(() => {
+      app.log.warn('grace period elapsed, forcing exit')
+      process.exit(1)
+    }, cfg.shutdownGraceMs)
+    forceExit.unref()
+
+    void app
+      .close()
+      .then(() => closePool())
+      .then(() => process.exit(0))
+      .catch(() => process.exit(1))
+  })
+}
+
+try {
+  await app.listen({ port: cfg.port, host: cfg.host })
+  app.log.info({ port: cfg.port }, 'ingestion service ready')
+} catch (err) {
+  app.log.error({ err }, 'failed to start')
+  process.exit(1)
+}

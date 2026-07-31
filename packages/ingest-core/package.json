@@ -1,0 +1,23 @@
+{
+  "name": "@ollive/ingest-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Validate, enrich, persist. Framework-free so one implementation serves both entry points.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": { "build": "tsc -b" },
+  "dependencies": {
+    "@ollive/contracts": "*",
+    "@ollive/db": "*",
+    "@ollive/providers": "*",
+    "@ollive/sdk": "*"
+  }
+}

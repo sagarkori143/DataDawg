@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { ErrorType } from '@ollive/contracts'
+import { instrument } from '@ollive/sdk'
 import {
   EMPTY_USAGE,
   ProviderError,
@@ -48,7 +49,16 @@ export class AnthropicAdapter implements ProviderAdapter {
   private readonly client: Anthropic
 
   constructor(apiKey: string) {
-    this.client = new Anthropic({
+    // ── Where auto-instrumentation attaches ─────────────────────────────────
+    //
+    // One word, one place. Every call this adapter makes is now timed and
+    // measured, and not one line below this constructor knows about telemetry.
+    //
+    // It wraps the RAW vendor client rather than this adapter on purpose: the
+    // interesting claim is that a third-party SDK we do not own can be
+    // instrumented without touching it. Wrapping our own facade would prove
+    // nothing about the hard case.
+    this.client = instrument(new Anthropic({
       apiKey,
       // Retries are disabled here and owned one layer up.
       //
@@ -58,7 +68,7 @@ export class AnthropicAdapter implements ProviderAdapter {
       // adapter reports each attempt honestly and lets the caller decide.
       maxRetries: 0,
       timeout: 120_000,
-    })
+    }))
   }
 
   private buildParams(req: ChatRequest) {

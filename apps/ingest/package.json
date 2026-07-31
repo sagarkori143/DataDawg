@@ -1,0 +1,19 @@
+{
+  "name": "@ollive/ingest",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone ingestion service. Proves the SDK to network to storage boundary is real.",
+  "main": "./dist/server.js",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@ollive/config": "*",
+    "@ollive/db": "*",
+    "@ollive/ingest-core": "*",
+    "fastify": "^5.2.0"
+  }
+}

@@ -1,5 +1,7 @@
 import { chat } from '@ollive/db'
 import { ProviderError, getAdapter, getRegistry } from '@ollive/providers'
+import { flush, withContext } from '@ollive/sdk'
+import { after } from 'next/server'
 import { buildContextWindow, deriveTitle } from '@/lib/context-window'
 
 /**
@@ -126,21 +128,41 @@ export async function POST(req: Request): Promise<Response> {
       })
 
       try {
-        for await (const chunk of adapter.stream({
-          model,
-          messages: context.messages,
-          // Propagates the browser disconnect all the way to the vendor SDK, so
-          // pressing Stop actually stops the upstream call rather than leaving
-          // it running and billing with nobody listening.
-          signal: req.signal,
-        })) {
-          if (chunk.type === 'text') {
-            text += chunk.text
-            send({ type: 'text', text: chunk.text })
-          } else if (chunk.type === 'done') {
-            send({ type: 'done', finishReason: chunk.finishReason })
-          }
-        }
+        /**
+         * The wristband.
+         *
+         * Everything inside this callback — including code several layers deep
+         * inside the vendor SDK that has never heard of a conversation — can
+         * read these identifiers. Nothing below is passed a single extra
+         * parameter to make that work, which is the entire point.
+         */
+        await withContext(
+          {
+            conversationId: conversation.id,
+            messageId: assistantMessage.id,
+            attributes: {
+              dropped_turns: context.droppedTurns,
+              context_tokens: context.estimatedTokens,
+            },
+          },
+          async () => {
+            for await (const chunk of adapter.stream({
+              model,
+              messages: context.messages,
+              // Propagates the browser disconnect all the way to the vendor
+              // SDK, so pressing Stop actually stops the upstream call rather
+              // than leaving it running and billing with nobody listening.
+              signal: req.signal,
+            })) {
+              if (chunk.type === 'text') {
+                text += chunk.text
+                send({ type: 'text', text: chunk.text })
+              } else if (chunk.type === 'done') {
+                send({ type: 'done', finishReason: chunk.finishReason })
+              }
+            }
+          },
+        )
 
         await chat.completeMessage({
           id: assistantMessage.id,
@@ -175,6 +197,23 @@ export async function POST(req: Request): Promise<Response> {
         } catch {
           // Already closed by the client disconnecting. Expected.
         }
+
+        /**
+         * Flush telemetry after the response, before the process freezes.
+         *
+         * On a serverless platform the function is suspended the instant the
+         * response completes, so a 200ms batch timer never fires and every
+         * buffered event is silently lost. `after()` runs work in the window
+         * between "response sent" and "execution suspended", which is the only
+         * place this can happen. Most instrumentation demos deploy without it
+         * and log nothing in production while working perfectly in dev.
+         */
+        after(async () => {
+          await flush().catch(() => {
+            // Telemetry delivery failed after the user already has their
+            // answer. There is nothing to report to and nothing to retry into.
+          })
+        })
       }
     },
   })

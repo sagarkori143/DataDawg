@@ -12,7 +12,9 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -b",
     "test": "tsx --test src/**/*.test.ts"
@@ -20,6 +22,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
     "@ollive/config": "*",
-    "@ollive/contracts": "*"
+    "@ollive/contracts": "*",
+    "@ollive/sdk": "*"
   }
 }

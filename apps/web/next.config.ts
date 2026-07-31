@@ -30,7 +30,14 @@ const config: NextConfig = {
    * Workspace packages ship TypeScript source; Next compiles them in-place so
    * there is no build step between editing a package and seeing it in the app.
    */
-  transpilePackages: ['@ollive/contracts', '@ollive/config', '@ollive/db', '@ollive/providers'],
+  transpilePackages: [
+    '@ollive/contracts',
+    '@ollive/config',
+    '@ollive/db',
+    '@ollive/providers',
+    '@ollive/sdk',
+    '@ollive/ingest-core',
+  ],
 
   eslint: { ignoreDuringBuilds: true },
 }
