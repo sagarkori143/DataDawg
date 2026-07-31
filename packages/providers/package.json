@@ -1,0 +1,25 @@
+{
+  "name": "@ollive/providers",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Thin adapters over each vendor SDK, normalised onto one interface and one error taxonomy.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "tsx --test src/**/*.test.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
+    "@ollive/config": "*",
+    "@ollive/contracts": "*"
+  }
+}
