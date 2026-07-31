@@ -37,6 +37,20 @@ export function getPool(): pg.Pool {
   pool = new Pool({
     connectionString: cfg.url,
     max: cfg.poolMax,
+    // ── TLS ─────────────────────────────────────────────────────────────────
+    // node-postgres v8 changed `sslmode=require` to mean full certificate
+    // verification. Managed providers (Supabase, Neon, RDS) commonly present a
+    // chain that is not in Node's bundled CA store, so a connection string that
+    // worked before now fails with SELF_SIGNED_CERT_IN_CHAIN.
+    //
+    // The connection is still encrypted either way — what is being relaxed is
+    // *authentication of the server*, which is what protects against a MITM.
+    // That is a real reduction, so it is opt-out rather than unconditional:
+    // set DATABASE_SSL_STRICT=true (with the provider's CA available) to keep
+    // full verification. Documented in the README rather than left implicit.
+    ...(cfg.url.includes('sslmode=disable')
+      ? {}
+      : { ssl: { rejectUnauthorized: cfg.sslStrict } }),
     // Neon closes idle connections on its side; releasing ours first avoids the
     // "Connection terminated unexpectedly" class of error on the next borrow.
     idleTimeoutMillis: 30_000,

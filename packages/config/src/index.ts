@@ -167,10 +167,23 @@ export const dbConfig = slice(
       // hold their own pool. A large per-instance pool is how you exhaust the
       // server's connection limit with a traffic spike.
       DATABASE_POOL_MAX: z.coerce.number().int().positive().max(50).default(5),
+      /**
+       * Verify the server's TLS certificate chain.
+       *
+       * Off by default because managed Postgres providers present chains that
+       * are not in Node's bundled CA store, and `pg` v8 now treats
+       * `sslmode=require` as full verification. The connection stays encrypted
+       * either way; this controls whether we authenticate the server.
+       */
+      DATABASE_SSL_STRICT: z
+        .enum(['true', 'false'])
+        .default('false')
+        .transform((v) => v === 'true'),
     })
     .transform((e) => ({
       url: e.DATABASE_URL,
       poolMax: e.DATABASE_POOL_MAX,
+      sslStrict: e.DATABASE_SSL_STRICT,
     })),
 )
 
