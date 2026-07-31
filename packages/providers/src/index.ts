@@ -1,10 +1,16 @@
 import { providerConfig } from '@ollive/config'
 import { AnthropicAdapter } from './anthropic.js'
+import { COMPATIBLE_VENDORS, OpenAICompatibleAdapter } from './openai-compatible.js'
 import type { ProviderAdapter } from './types.js'
 
 export * from './types.js'
 export * from './pricing.js'
 export { AnthropicAdapter } from './anthropic.js'
+export {
+  COMPATIBLE_VENDORS,
+  OpenAICompatibleAdapter,
+  type CompatibleVendor,
+} from './openai-compatible.js'
 
 /**
  * Build the adapters this deployment can actually serve.
@@ -20,6 +26,14 @@ export function buildRegistry(): Map<string, ProviderAdapter> {
 
   if (cfg.keys.anthropic) {
     registry.set('anthropic', new AnthropicAdapter(cfg.keys.anthropic))
+  }
+
+  // Every OpenAI-compatible vendor comes from the same table and the same
+  // adapter. Adding one is a config row, not a class — which is the test of
+  // whether the abstraction is real or decorative.
+  for (const [key, vendor] of Object.entries(COMPATIBLE_VENDORS)) {
+    const apiKey = cfg.keys[key as keyof typeof cfg.keys]
+    if (apiKey) registry.set(key, new OpenAICompatibleAdapter(vendor, apiKey))
   }
 
   return registry

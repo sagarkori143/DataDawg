@@ -27,6 +27,26 @@ export function Chat() {
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [meta, setMeta] = useState<Meta | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [providers, setProviders] = useState<
+    { name: string; models: string[]; defaultModel: string }[]
+  >([])
+  const [choice, setChoice] = useState<{ provider: string; model: string } | null>(null)
+
+  // Offer exactly what this deployment is keyed for, rather than a hardcoded
+  // list that lies when a key is missing.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch('/api/providers')
+        const json = await res.json()
+        setProviders(json.providers)
+        const first = json.providers[0]
+        if (first) setChoice({ provider: first.name, model: first.defaultModel })
+      } catch {
+        /* the chat still works on the server default */
+      }
+    })()
+  }, [])
 
   /**
    * Held in a ref, not state.
@@ -70,7 +90,7 @@ export function Chat() {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversationId, message: text }),
+        body: JSON.stringify({ conversationId, message: text, ...(choice ?? {}) }),
         signal: controller.signal,
       })
 
@@ -154,7 +174,7 @@ export function Chat() {
       // message count changed.
       setRefreshKey((k) => k + 1)
     }
-  }, [input, streaming, conversationId])
+  }, [input, streaming, conversationId, choice])
 
   /**
    * Resume a conversation.
@@ -211,11 +231,28 @@ export function Chat() {
             dashboards →
           </a>
         </div>
+        <div className="flex items-center gap-3">
+          {providers.length > 0 && (
+            <select
+              value={choice ? `${choice.provider}:${choice.model}` : ''}
+              onChange={(e) => {
+                const [provider, model] = e.target.value.split(':')
+                if (provider && model) setChoice({ provider, model })
+              }}
+              disabled={streaming}
+              className="rounded-md border border-[--color-edge] bg-[--color-panel] px-2 py-1 font-mono text-[11px] text-[--color-muted] outline-none disabled:opacity-40"
+            >
+              {providers.flatMap((p) =>
+                p.models.map((m) => (
+                  <option key={`${p.name}:${m}`} value={`${p.name}:${m}`}>
+                    {p.name} / {m}
+                  </option>
+                )),
+              )}
+            </select>
+          )}
         {meta && (
           <div className="flex items-center gap-3 font-mono text-[11px] text-[--color-muted]">
-            <span>{meta.provider}</span>
-            <span className="text-[--color-edge]">/</span>
-            <span>{meta.model}</span>
             {meta.droppedTurns > 0 && (
               <span title="Older turns evicted to stay within the context budget">
                 · {meta.droppedTurns} turn{meta.droppedTurns === 1 ? '' : 's'} dropped
@@ -223,6 +260,7 @@ export function Chat() {
             )}
           </div>
         )}
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto">

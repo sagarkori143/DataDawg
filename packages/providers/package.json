@@ -23,6 +23,7 @@
     "@anthropic-ai/sdk": "^0.115.0",
     "@ollive/config": "*",
     "@ollive/contracts": "*",
-    "@ollive/sdk": "*"
+    "@ollive/sdk": "*",
+    "openai": "^4.77.0"
   }
 }
