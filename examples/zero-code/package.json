@@ -1,0 +1,15 @@
+{
+  "name": "@ollive/example-zero-code",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A plain script with no telemetry code, instrumented by a node flag alone.",
+  "scripts": {
+    "without": "node app.mjs",
+    "with": "node --import @ollive/sdk/register app.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
+    "@ollive/sdk": "*"
+  }
+}
