@@ -1,0 +1,263 @@
+import { config as loadDotenv } from 'dotenv'
+import { z } from 'zod'
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * CONFIGURATION
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * No file in this repo reads `process.env` outside this module. That single
+ * rule buys three things:
+ *
+ *   1. **Container readiness.** The same build runs anywhere; only the
+ *      environment changes. There are no baked paths or hostnames to find.
+ *   2. **Loud failure at boot.** A missing variable stops the process at
+ *      startup with a message naming the variable — not at 3am with a
+ *      `TypeError: Cannot read properties of undefined`.
+ *   3. **Typed access.** `env.db.url` is a string. `process.env.DATABASE_URL`
+ *      is `string | undefined` at every call site forever.
+ *
+ * ── Why slices instead of one big schema ────────────────────────────────────
+ * The ingestion service has no business failing to boot because ANTHROPIC_API_KEY
+ * is absent — it never calls a model. Each service validates only the slice it
+ * actually uses. A monolithic "validate everything" schema couples every service
+ * to every other service's configuration, which is precisely the coupling that
+ * makes deployments brittle.
+ */
+
+let dotenvLoaded = false
+
+/**
+ * Load `.env` into `process.env`.
+ *
+ * Only in development. In production the environment is injected by the platform
+ * (Vercel, a container runtime, k8s Secrets) and a `.env` file sitting in the
+ * image would be both redundant and a way to accidentally ship a credential.
+ */
+function ensureDotenv(): void {
+  if (dotenvLoaded) return
+  if (process.env.NODE_ENV !== 'production') {
+    loadDotenv({ quiet: true })
+  }
+  dotenvLoaded = true
+}
+
+/** Turn Zod issues into something a human can act on without reading the schema. */
+function fail(slice: string, error: z.ZodError): never {
+  const lines = error.issues.map((issue) => {
+    const key = issue.path.join('.')
+    return `  ✗ ${key}: ${issue.message}`
+  })
+
+  throw new Error(
+    [
+      '',
+      `Invalid configuration for "${slice}":`,
+      ...lines,
+      '',
+      'Copy .env.example to .env and fill in the missing values.',
+      '',
+    ].join('\n'),
+  )
+}
+
+const resetters: (() => void)[] = []
+
+/**
+ * Memoise a slice so validation runs once per process, not per access.
+ *
+ * Generic over the schema rather than over its output type: every slice ends in
+ * `.transform()`, so its input (raw `process.env` strings) and output (typed
+ * config object) differ, and `z.ZodType<T>` would wrongly require them to match.
+ */
+function slice<S extends z.ZodTypeAny>(name: string, schema: S): () => z.infer<S> {
+  let cached: z.infer<S> | undefined
+  let loaded = false
+
+  resetters.push(() => {
+    cached = undefined
+    loaded = false
+  })
+
+  return () => {
+    if (loaded) return cached as z.infer<S>
+    ensureDotenv()
+    const result = schema.safeParse(process.env)
+    if (!result.success) fail(name, result.error)
+    cached = result.data
+    loaded = true
+    return cached
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Runtime
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const runtimeConfig = slice(
+  'runtime',
+  z
+    .object({
+      NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+      LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error', 'silent']).default('info'),
+    })
+    .transform((e) => ({
+      nodeEnv: e.NODE_ENV,
+      logLevel: e.LOG_LEVEL,
+      isProduction: e.NODE_ENV === 'production',
+    })),
+)
+
+/**
+ * Are we running somewhere that freezes the process the moment a response is sent?
+ *
+ * This is not cosmetic. On Vercel a 200ms batch timer will never fire — the
+ * function is suspended as soon as the response returns — so every buffered
+ * event would be lost. The transport uses this to switch to flush-on-response,
+ * trading batching efficiency for actually delivering the data.
+ */
+export function isServerless(): boolean {
+  return Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Database
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const dbConfig = slice(
+  'database',
+  z
+    .object({
+      DATABASE_URL: z
+        .string()
+        .min(1, 'required — get a connection string from https://neon.tech')
+        .refine((v) => v.startsWith('postgres://') || v.startsWith('postgresql://'), {
+          message: 'must be a postgres:// or postgresql:// URL',
+        }),
+      // Small by default: Neon pools on their side, and serverless functions each
+      // hold their own pool. A large per-instance pool is how you exhaust the
+      // server's connection limit with a traffic spike.
+      DATABASE_POOL_MAX: z.coerce.number().int().positive().max(50).default(5),
+    })
+    .transform((e) => ({
+      url: e.DATABASE_URL,
+      poolMax: e.DATABASE_POOL_MAX,
+    })),
+)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Model providers
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const providerConfig = slice(
+  'providers',
+  z
+    .object({
+      ANTHROPIC_API_KEY: z.string().min(1).optional(),
+      OPENAI_API_KEY: z.string().min(1).optional(),
+      // OpenAI-compatible vendors are configuration, not code — one adapter,
+      // many base URLs. Keys are optional so the app degrades to whatever is
+      // actually available rather than refusing to start.
+      GROQ_API_KEY: z.string().min(1).optional(),
+      DEEPSEEK_API_KEY: z.string().min(1).optional(),
+    })
+    .transform((e) => {
+      const keys = {
+        anthropic: e.ANTHROPIC_API_KEY,
+        openai: e.OPENAI_API_KEY,
+        groq: e.GROQ_API_KEY,
+        deepseek: e.DEEPSEEK_API_KEY,
+      } as const
+
+      const available = (Object.keys(keys) as (keyof typeof keys)[]).filter((k) => keys[k])
+
+      return {
+        keys,
+        /** Which providers this deployment can actually serve. The UI offers exactly these. */
+        available,
+        has(provider: keyof typeof keys): boolean {
+          return Boolean(keys[provider])
+        },
+      }
+    })
+    .refine((c) => c.available.length > 0, {
+      message: 'at least one provider key is required (ANTHROPIC_API_KEY or OPENAI_API_KEY)',
+    }),
+)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Telemetry — read by the SDK
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const telemetryConfig = slice(
+  'telemetry',
+  z
+    .object({
+      /**
+       * Unset is a supported, deliberate state — not an error.
+       *
+       * The SDK becomes a no-op with one startup warning. It must never throw and
+       * never retry into the void: the absence of telemetry cannot be allowed to
+       * break the application being instrumented. This is the first thing a
+       * reviewer hits if they clone the repo without reading the README.
+       */
+      INGEST_ENDPOINT: z.string().url().optional(),
+      INGEST_API_KEY: z.string().min(1).optional(),
+
+      OLLIVE_BATCH_SIZE: z.coerce.number().int().positive().max(500).default(50),
+      OLLIVE_FLUSH_MS: z.coerce.number().int().positive().max(60_000).default(200),
+      OLLIVE_MAX_QUEUE: z.coerce.number().int().positive().max(100_000).default(1_000),
+      OLLIVE_PREVIEW_CHARS: z.coerce.number().int().nonnegative().max(2_000).default(300),
+      OLLIVE_REDACTION: z.enum(['sdk', 'ingest', 'both', 'off']).default('both'),
+      /** Hard ceiling on a single ingestion request. Logging must never become the slow path. */
+      OLLIVE_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().max(30_000).default(5_000),
+    })
+    .transform((e) => ({
+      endpoint: e.INGEST_ENDPOINT ?? null,
+      apiKey: e.INGEST_API_KEY ?? null,
+      enabled: Boolean(e.INGEST_ENDPOINT),
+      batchSize: e.OLLIVE_BATCH_SIZE,
+      flushMs: e.OLLIVE_FLUSH_MS,
+      maxQueue: e.OLLIVE_MAX_QUEUE,
+      previewChars: e.OLLIVE_PREVIEW_CHARS,
+      redaction: e.OLLIVE_REDACTION,
+      httpTimeoutMs: e.OLLIVE_HTTP_TIMEOUT_MS,
+    })),
+)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ingestion server
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const ingestServerConfig = slice(
+  'ingest-server',
+  z
+    .object({
+      INGEST_PORT: z.coerce.number().int().positive().max(65_535).default(3001),
+      INGEST_HOST: z.string().default('0.0.0.0'),
+      INGEST_API_KEY: z.string().min(1, 'required — the SDK authenticates with this'),
+      /** Rejected at the edge with 413. A 500-event batch of 2KB previews is ~1MB; 4MB is generous headroom. */
+      INGEST_MAX_BODY_BYTES: z.coerce.number().int().positive().default(4 * 1024 * 1024),
+      /**
+       * How long SIGTERM waits for in-flight work before exiting.
+       *
+       * This is the same number as k8s `terminationGracePeriodSeconds` and it is
+       * why graceful shutdown is worth building now rather than when containers
+       * arrive: without it, every deploy silently drops whatever was buffered.
+       */
+      SHUTDOWN_GRACE_MS: z.coerce.number().int().positive().max(60_000).default(10_000),
+    })
+    .transform((e) => ({
+      port: e.INGEST_PORT,
+      host: e.INGEST_HOST,
+      apiKey: e.INGEST_API_KEY,
+      maxBodyBytes: e.INGEST_MAX_BODY_BYTES,
+      shutdownGraceMs: e.SHUTDOWN_GRACE_MS,
+    })),
+)
+
+/** Test-only: drop every memoised slice so a test can vary the environment. */
+export function __resetConfigForTests(): void {
+  dotenvLoaded = true // tests set process.env directly; never let dotenv overwrite them
+  for (const reset of resetters) reset()
+}

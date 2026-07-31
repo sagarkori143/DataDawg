@@ -1,0 +1,23 @@
+{
+  "name": "@ollive/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The wire contract between the SDK and the ingestion pipeline. Single source of truth.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "tsx --test src/**/*.test.ts"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  }
+}
