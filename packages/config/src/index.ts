@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+import { dirname, join, parse } from 'node:path'
 import { config as loadDotenv } from 'dotenv'
 import { z } from 'zod'
 
@@ -28,18 +30,45 @@ import { z } from 'zod'
 let dotenvLoaded = false
 
 /**
+ * Find the nearest `.env` by walking up from the current directory.
+ *
+ * dotenv resolves `.env` relative to `process.cwd()`, which is wrong in a
+ * monorepo: `npm run migrate --workspace @ollive/db` executes with cwd set to
+ * `packages/db`, so the root `.env` is invisible and every variable reads as
+ * missing. Walking up finds it from any workspace, and from `apps/web` under
+ * `next dev` too.
+ *
+ * Stops at the filesystem root rather than looping forever, and returns null if
+ * nothing is found — which is a legitimate state in production, where the
+ * platform injects the environment directly.
+ */
+function findEnvFile(from: string): string | null {
+  const { root } = parse(from)
+  let dir = from
+
+  for (;;) {
+    const candidate = join(dir, '.env')
+    if (existsSync(candidate)) return candidate
+    if (dir === root) return null
+    dir = dirname(dir)
+  }
+}
+
+/**
  * Load `.env` into `process.env`.
  *
- * Only in development. In production the environment is injected by the platform
- * (Vercel, a container runtime, k8s Secrets) and a `.env` file sitting in the
- * image would be both redundant and a way to accidentally ship a credential.
+ * Only outside production. In production the environment is injected by the
+ * platform (Vercel, a container runtime, k8s Secrets) and a `.env` inside the
+ * image would be both redundant and a way to ship a credential by accident.
  */
 function ensureDotenv(): void {
   if (dotenvLoaded) return
-  if (process.env.NODE_ENV !== 'production') {
-    loadDotenv({ quiet: true })
-  }
   dotenvLoaded = true
+
+  if (process.env.NODE_ENV === 'production') return
+
+  const path = findEnvFile(process.cwd())
+  if (path) loadDotenv({ path, quiet: true })
 }
 
 /** Turn Zod issues into something a human can act on without reading the schema. */
