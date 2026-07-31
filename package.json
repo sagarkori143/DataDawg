@@ -21,7 +21,11 @@
     "db:reset": "npm run reset --workspace @ollive/db",
     "dev": "npm run build && concurrently -n web,ingest -c cyan,magenta \"npm:dev:web\" \"npm:dev:ingest\"",
     "dev:web": "npm run dev --workspace @ollive/web",
-    "dev:ingest": "npm run dev --workspace @ollive/ingest"
+    "dev:ingest": "npm run dev --workspace @ollive/ingest",
+    "test": "npm run test --workspaces --if-present",
+    "db:verify": "npm run verify --workspace @ollive/db",
+    "load": "node examples/load/generate.mjs",
+    "zero-code": "node --import @ollive/sdk/register examples/zero-code/app.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
