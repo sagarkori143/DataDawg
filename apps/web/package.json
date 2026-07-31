@@ -13,12 +13,13 @@
     "@ollive/config": "*",
     "@ollive/contracts": "*",
     "@ollive/db": "*",
+    "@ollive/ingest-core": "*",
     "@ollive/providers": "*",
+    "@ollive/sdk": "*",
     "next": "^15.1.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "@ollive/sdk": "*",
-    "@ollive/ingest-core": "*"
+    "recharts": "^3.10.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.0.0",
