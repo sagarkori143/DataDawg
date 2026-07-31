@@ -1,0 +1,30 @@
+{
+  "name": "@ollive/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Schema, migrations and repositories. Chat and telemetry access are deliberately separate.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "migrations"],
+  "scripts": {
+    "build": "tsc -b",
+    "migrate": "tsx src/cli/migrate.ts",
+    "reset": "tsx src/cli/migrate.ts --reset",
+    "test": "tsx --test src/**/*.test.ts"
+  },
+  "dependencies": {
+    "@ollive/config": "*",
+    "@ollive/contracts": "*",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10"
+  }
+}
