@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "@ollive/db",
   "version": "0.1.0",
   "private": true,
@@ -17,6 +17,7 @@
     "build": "tsc -b",
     "migrate": "tsx src/cli/migrate.ts",
     "reset": "tsx src/cli/migrate.ts --reset",
+    "verify": "tsx src/cli/verify.ts",
     "test": "tsx --test src/**/*.test.ts"
   },
   "dependencies": {
@@ -28,3 +29,4 @@
     "@types/pg": "^8.11.10"
   }
 }
+

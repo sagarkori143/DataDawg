@@ -20,6 +20,45 @@ const { Pool, types } = pg
  */
 types.setTypeParser(types.builtins.INT8, (v) => Number.parseInt(v, 10))
 
+/**
+ * ── TLS ─────────────────────────────────────────────────────────────────────
+ *
+ * `sslmode` is removed from the URL and the TLS config supplied explicitly.
+ *
+ * Passing a connection string *and* an `ssl` object does not merge the way you
+ * would expect: `pg-connection-string` parses `sslmode` into its own ssl
+ * config, and that silently wins over the explicit option. Owning one source of
+ * truth is the only way to make the behaviour deterministic across pg versions.
+ *
+ * The reason this matters at all: node-postgres v8 reinterpreted
+ * `sslmode=require` to mean full certificate verification (previously it meant
+ * "encrypt, don't verify" — libpq's semantics). Managed providers commonly
+ * present chains that are absent from Node's bundled CA store, so connection
+ * strings that worked for years now fail with SELF_SIGNED_CERT_IN_CHAIN.
+ *
+ * What relaxing this gives up is **authentication of the server**, not
+ * encryption — traffic is TLS either way. That is a real reduction in
+ * protection against an active MITM, so it is a documented default rather than
+ * a silent one: set DATABASE_SSL_STRICT=true to restore verification.
+ */
+function resolveTls(
+  raw: string,
+  strict: boolean,
+): { connectionString: string; ssl: pg.PoolConfig['ssl'] } {
+  const url = new URL(raw)
+  const sslmode = url.searchParams.get('sslmode')
+
+  url.searchParams.delete('sslmode')
+  url.searchParams.delete('uselibpqcompat')
+
+  const connectionString = url.toString()
+
+  // Explicitly opted out — local Postgres over a loopback socket, typically.
+  if (sslmode === 'disable') return { connectionString, ssl: false }
+
+  return { connectionString, ssl: { rejectUnauthorized: strict } }
+}
+
 let pool: pg.Pool | undefined
 
 /**
@@ -33,24 +72,12 @@ export function getPool(): pg.Pool {
   if (pool) return pool
 
   const cfg = dbConfig()
+  const { connectionString, ssl } = resolveTls(cfg.url, cfg.sslStrict)
 
   pool = new Pool({
-    connectionString: cfg.url,
+    connectionString,
+    ssl,
     max: cfg.poolMax,
-    // ── TLS ─────────────────────────────────────────────────────────────────
-    // node-postgres v8 changed `sslmode=require` to mean full certificate
-    // verification. Managed providers (Supabase, Neon, RDS) commonly present a
-    // chain that is not in Node's bundled CA store, so a connection string that
-    // worked before now fails with SELF_SIGNED_CERT_IN_CHAIN.
-    //
-    // The connection is still encrypted either way — what is being relaxed is
-    // *authentication of the server*, which is what protects against a MITM.
-    // That is a real reduction, so it is opt-out rather than unconditional:
-    // set DATABASE_SSL_STRICT=true (with the provider's CA available) to keep
-    // full verification. Documented in the README rather than left implicit.
-    ...(cfg.url.includes('sslmode=disable')
-      ? {}
-      : { ssl: { rejectUnauthorized: cfg.sslStrict } }),
     // Neon closes idle connections on its side; releasing ours first avoids the
     // "Connection terminated unexpectedly" class of error on the next borrow.
     idleTimeoutMillis: 30_000,
