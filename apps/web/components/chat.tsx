@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Sidebar } from './sidebar'
 
 interface Msg {
   id: string
@@ -25,6 +26,7 @@ export function Chat() {
   const [streaming, setStreaming] = useState(false)
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [meta, setMeta] = useState<Meta | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
 
   /**
    * Held in a ref, not state.
@@ -148,11 +150,60 @@ export function Chat() {
     } finally {
       abortRef.current = null
       setStreaming(false)
+      // Re-sort the sidebar: this conversation is now the most recent, and its
+      // message count changed.
+      setRefreshKey((k) => k + 1)
     }
   }, [input, streaming, conversationId])
 
+  /**
+   * Resume a conversation.
+   *
+   * Aborts anything in flight first — switching conversations mid-stream would
+   * otherwise keep appending the old answer into the newly loaded thread.
+   */
+  const resume = useCallback(async (id: string) => {
+    abortRef.current?.abort()
+    abortRef.current = null
+    setStreaming(false)
+
+    try {
+      const res = await fetch(`/api/conversations/${id}`)
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error)
+
+      setConversationId(id)
+      setMessages(
+        json.messages.map((m: { id: string; role: string; content: string; isComplete: boolean }) => ({
+          id: m.id,
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+          partial: !m.isComplete,
+        })),
+      )
+    } catch {
+      /* leave the current view alone rather than blanking it on a failed load */
+    }
+  }, [])
+
+  const newConversation = useCallback(() => {
+    abortRef.current?.abort()
+    abortRef.current = null
+    setStreaming(false)
+    setConversationId(null)
+    setMessages([])
+    setMeta(null)
+  }, [])
+
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full">
+      <Sidebar
+        activeId={conversationId}
+        onSelect={(id) => void resume(id)}
+        onNew={newConversation}
+        refreshKey={refreshKey}
+      />
+      <div className="flex min-w-0 flex-1 flex-col">
       <header className="flex items-center justify-between border-b border-[--color-edge] px-6 py-3">
         <div className="flex items-baseline gap-3">
           <span className="text-sm font-semibold tracking-tight">Ollive</span>
@@ -249,6 +300,7 @@ export function Chat() {
             </button>
           )}
         </div>
+      </div>
       </div>
     </div>
   )

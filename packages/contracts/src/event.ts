@@ -213,6 +213,37 @@ export type EventBatch = z.infer<typeof EventBatchSchema>
 export type EventBatchInput = z.input<typeof EventBatchSchema>
 
 /**
+ * The same envelope, but with the events left unparsed.
+ *
+ * `EventBatchSchema` above is the published contract — it is what the SDK
+ * builds against and what the JSON Schema is generated from, and it validates
+ * events inline.
+ *
+ * The *receiver* must not use it, and the reason is a real failure mode: Zod
+ * validates an array all-or-nothing, so a single malformed event would reject
+ * the whole batch and take forty-nine healthy events down with it. One bad SDK
+ * build would then blank the dashboards for every well-behaved client.
+ *
+ * So ingestion validates the envelope with this, then validates each event
+ * individually — bad ones are dead-lettered, good ones land. Strict where the
+ * contract is defined, resilient where it is consumed.
+ */
+export const EventBatchEnvelopeSchema = z
+  .object({
+    sdk: z.object({
+      name: z.string().max(64),
+      version: z.string().max(32),
+      runtime: z.string().max(64).default('node'),
+    }),
+    sentAt: isoTimestamp,
+    events: z.array(z.unknown()).min(1).max(500),
+    droppedSinceLastBatch: z.number().int().nonnegative().default(0),
+  })
+  .strict()
+
+export type EventBatchEnvelope = z.infer<typeof EventBatchEnvelopeSchema>
+
+/**
  * ═══════════════════════════════════════════════════════════════════════════
  * INGESTION RESPONSE
  * ═══════════════════════════════════════════════════════════════════════════

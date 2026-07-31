@@ -1,5 +1,6 @@
 import {
-  EventBatchSchema,
+  EventBatchEnvelopeSchema,
+  InferenceEventSchema,
   type IngestAck,
   type InferenceEvent,
 } from '@ollive/contracts'
@@ -46,8 +47,13 @@ export async function handleBatch(
   rawBody: unknown,
   opts: IngestOptions,
 ): Promise<IngestOutcome> {
-  // ── 1. Validate the envelope ─────────────────────────────────────────────
-  const parsed = EventBatchSchema.safeParse(rawBody)
+  // ── 1. Validate the envelope only ────────────────────────────────────────
+  //
+  // Events are left as `unknown` here and validated one at a time below. Zod
+  // rejects an array all-or-nothing, so parsing them inline would let a single
+  // malformed event reject the batch and discard forty-nine healthy ones — one
+  // bad SDK build blanking the dashboards for every well-behaved client.
+  const parsed = EventBatchEnvelopeSchema.safeParse(rawBody)
 
   if (!parsed.success) {
     // The envelope itself is wrong, so there are no individual events to
@@ -79,7 +85,30 @@ export async function handleBatch(
   const errors: IngestAck['errors'] = []
   let deadLettered = 0
 
-  for (const event of batch.events) {
+  for (const candidate of batch.events) {
+    // Per-event validation. This is what keeps one bad event from costing the
+    // other forty-nine.
+    const one = InferenceEventSchema.safeParse(candidate)
+
+    if (!one.success) {
+      const reason = one.error.issues
+        .map((i) => `${i.path.join('.') || '<root>'}: ${i.message}`)
+        .join('; ')
+      const eventId =
+        typeof (candidate as { eventId?: unknown })?.eventId === 'string'
+          ? ((candidate as { eventId: string }).eventId)
+          : null
+
+      errors.push({ eventId, reason })
+      deadLettered++
+      await events
+        .writeDlq({ payload: candidate, eventId, stage: 'validate', error: reason })
+        .catch(() => {})
+      continue
+    }
+
+    const event = one.data
+
     try {
       priced.push(enrich(event, batch.sdk.version, opts))
     } catch (err) {
