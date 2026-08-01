@@ -190,37 +190,35 @@ jobs:
           docker compose up -d --build
           docker compose ps
 
-      - name: Migrations ran before anything served traffic
+      - name: Schema exists and pgmq is live
         run: |
-          # `migrate` is a one-shot gated by service_completed_successfully, so
-          # `up` returning 0 already implies it exited 0. This asserts it
-          # explicitly and shows the output — the interesting part is the
-          # pgmq NOTICE, which proves the queue path is live rather than
-          # silently degrading to direct writes.
+          # `docker compose up` returning 0 already proves migrations ran —
+          # the `migrate` service is gated by service_completed_successfully.
+          # What is worth asserting separately is what the migration DECIDED:
+          # migration 005 degrades gracefully when pgmq is unavailable, so
+          # without this check the stack could come up on the direct sink and
+          # the event-bus path would never be exercised while everything
+          # looked green.
           echo "--- migrate logs ---"
-          docker compose logs migrate 2>&1 | tail -25 || true
+          docker compose logs migrate 2>&1 | tail -20 || true
 
-          CID=$(docker compose ps -aq migrate 2>/dev/null | head -1 || true)
-          if [ -n "$CID" ]; then
-            CODE=$(docker inspect --format '{{.State.ExitCode}}' "$CID" 2>/dev/null || echo unknown)
-            echo "migrate exit code: $CODE"
-            if [ "$CODE" != "0" ] && [ "$CODE" != "unknown" ]; then
-              echo "::error::migrations failed with exit $CODE"; exit 1
-            fi
-          else
-            echo "migrate container already reaped; 'up' succeeding means the gate passed"
+          echo "--- schema ---"
+          docker compose exec -T db psql -U postgres -d ollive -c "\dt" || true
+
+          MIGRATIONS=$(docker compose exec -T db psql -U postgres -d ollive -tAc             "SELECT count(*) FROM _migrations" 2>/dev/null | tr -cd '0-9')
+          PGMQ=$(docker compose exec -T db psql -U postgres -d ollive -tAc             "SELECT to_regnamespace('pgmq') IS NOT NULL" 2>/dev/null | tr -cd 'tf')
+
+          echo "migrations recorded : ${MIGRATIONS:-none}"
+          echo "pgmq available      : ${PGMQ:-unknown}"
+
+          if [ "${MIGRATIONS:-0}" -lt 6 ] 2>/dev/null; then
+            echo "::error::expected at least 6 migrations, found ${MIGRATIONS:-0}"
+            exit 1
           fi
-
-          # The assertion that actually matters: the schema exists.
-          docker compose exec -T db psql -U postgres -d ollive -c '\dt' 2>&1 | tail -15
-          N=$(docker compose exec -T db psql -U postgres -d ollive -tAc                 "SELECT count(*) FROM _migrations" 2>/dev/null | tr -d '[:space:]')
-          echo "migrations recorded: $N"
-          [ "$N" -ge 6 ] || { echo "::error::expected >=6 migrations, found $N"; exit 1; }
-
-          # And whether pgmq actually came up on this image.
-          PGMQ=$(docker compose exec -T db psql -U postgres -d ollive -tAc                    "SELECT to_regnamespace('pgmq') IS NOT NULL" 2>/dev/null | tr -d '[:space:]')
-          echo "pgmq available: $PGMQ"
-          [ "$PGMQ" = "t" ] || { echo "::error::pgmq missing - queue sink would silently degrade"; exit 1; }
+          if [ "$PGMQ" != "t" ]; then
+            echo "::error::pgmq missing — the queue sink would silently degrade to direct"
+            exit 1
+          fi
 
       - name: All three services answer
         env:
