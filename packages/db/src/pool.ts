@@ -1,4 +1,4 @@
-import { dbConfig } from '@ollive/config'
+import { dbConfig, isServerless } from '@ollive/config'
 import pg from 'pg'
 
 const { Pool, types } = pg
@@ -74,13 +74,36 @@ export function getPool(): pg.Pool {
   const cfg = dbConfig()
   const { connectionString, ssl } = resolveTls(cfg.url, cfg.sslStrict)
 
+  /**
+   * Serverless gets a pool of one, and releases it quickly.
+   *
+   * A pool is a per-process object, so the interesting number is never
+   * `max` — it is `max × processes`, and on Vercel the process count is set by
+   * traffic, not by us. Three deployables at the default 5 plus a handful of
+   * concurrent lambdas comfortably exceeds a Supabase session-mode pool of 15,
+   * and the symptom is `EMAXCONNSESSION` on whichever service asks last —
+   * usually the dashboard, which then looks broken while the chat is fine.
+   *
+   * One is not a compromise here: a serverless invocation serves a single
+   * request, so a second connection would sit idle holding a slot. The short
+   * idle timeout matters for the same reason — a frozen lambda must not keep
+   * a server-side connection reserved while it does nothing.
+   *
+   * This reduces the pressure. It does not remove the ceiling: session mode
+   * dedicates one backend per client whatever we do. The actual fix is the
+   * transaction pooler (port 6543), which multiplexes many clients onto few
+   * backends — see docs/deployment.md.
+   */
+  const serverless = isServerless()
+
   pool = new Pool({
     connectionString,
     ssl,
-    max: cfg.poolMax,
-    // Neon closes idle connections on its side; releasing ours first avoids the
-    // "Connection terminated unexpectedly" class of error on the next borrow.
-    idleTimeoutMillis: 30_000,
+    max: serverless ? 1 : cfg.poolMax,
+    // The provider closes idle connections on its side; releasing ours first
+    // avoids the "Connection terminated unexpectedly" class of error on the
+    // next borrow.
+    idleTimeoutMillis: serverless ? 5_000 : 30_000,
     // Fail fast rather than hanging a request for 30s when the database is
     // unreachable. The chat route surfaces this as an error the user can act on.
     connectionTimeoutMillis: 10_000,

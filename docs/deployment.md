@@ -161,6 +161,41 @@ release. Liveness is dependency-free precisely so it can answer this question.
 
 ---
 
+## Connection limits — use the transaction pooler
+
+Supabase offers two pooler ports, and the difference decides whether this
+deploys at all:
+
+| | Port | What it does | Ceiling |
+|---|---|---|---|
+| **Session** | 5432 | One dedicated Postgres backend per client, for the life of the connection | `pool_size`, ~15 on free |
+| **Transaction** | 6543 | Backends are borrowed per statement and returned | Hundreds of clients |
+
+A pool is a **per-process** object, so the number that matters is never `max` —
+it is `max × processes`, and on Vercel the process count is set by traffic. Three
+deployables plus a few concurrent lambdas exceed 15 quickly, and the failure
+looks like this:
+
+```
+(EMAXCONNSESSION) max clients reached in session mode - max clients are limited to pool_size: 15
+```
+
+The service that asks last is the one that breaks, so the dashboard goes dark
+while the chat keeps working — which points the investigation at the wrong
+place.
+
+**Use port 6543 (transaction mode) for anything serverless.** Session mode is
+only needed for `LISTEN/NOTIFY`, advisory locks held across statements, and
+session-level `SET` — none of which the runtime path uses. Migrations do take an
+advisory lock, so run `db:migrate` against **5432**.
+
+The code helps but cannot fix this on its own: `getPool()` drops to `max: 1`
+with a 5s idle timeout when it detects a serverless runtime, because an
+invocation serves one request and a second connection would just hold a slot.
+That lowers the pressure; only transaction mode removes the ceiling.
+
+---
+
 ## Before the first deploy
 
 **Run the migrations once.** Vercel does not run them, and the app will fail on
