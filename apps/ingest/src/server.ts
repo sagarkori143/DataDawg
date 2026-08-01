@@ -49,57 +49,65 @@ const app = Fastify({
 app.get('/healthz', async () => ({ status: 'ok', uptime: process.uptime() }))
 
 /**
- * How stale the oldest unread message may get before this instance is
- * considered unfit to serve.
- *
- * Depth alone is not the signal — a deep queue draining fast is healthy. The
- * age of the oldest unread message is what says the worker has stopped keeping
- * up. 60s is comfortably above a normal batch (sub-second) and well below the
- * point at which anyone would notice missing data.
- */
-const MAX_QUEUE_LAG_SEC = 60
-
-/**
  * Readiness: can this process serve traffic?
  *
  * Checks the database, because an instance that cannot write is useless as an
- * ingestion endpoint — and, when running the queue worker, checks consumer lag
- * too.
+ * ingestion endpoint — and, when this instance owns the worker, checks consumer
+ * lag too.
  *
- * That second check closes a real gap. A worker that has wedged still answers
- * `/healthz` perfectly: the process is alive, the HTTP server responds, and the
- * queue silently grows while the instance reports itself healthy. Liveness
- * cannot catch it, because restarting is the wrong response — the process is
- * fine. Readiness can: the instance is pulled from rotation, traffic moves to a
- * peer whose worker is draining, and nothing is lost because the queue holds
- * the backlog.
+ * ── Why lag belongs in readiness, not liveness ──────────────────────────────
+ * A wedged worker answers `/healthz` perfectly: the process is alive, HTTP
+ * responds, and the queue grows silently while the instance reports itself
+ * healthy. Liveness cannot catch it, because restarting is the wrong response —
+ * the process is fine. Readiness can: pull the instance from rotation, traffic
+ * moves to a peer whose worker is draining, nothing is lost because the queue
+ * holds the backlog.
+ *
+ * ── Why only when this instance runs the worker ─────────────────────────────
+ * Readiness answers "can *I* serve", not "is the system healthy". An
+ * ingest-only instance behind a lagging worker fleet is still perfectly able to
+ * accept and enqueue; failing it would take the whole tier out over a problem
+ * it cannot fix, turning a slow consumer into a total outage.
+ *
+ * Lag is still reported in the body either way, so it is observable without
+ * being load-bearing.
  */
 app.get('/readyz', async (_req, reply) => {
   const dbOk = await ping()
   if (!dbOk) {
-    return reply.code(503).send({ status: 'degraded', database: false, reason: 'database unreachable' })
+    return reply
+      .code(503)
+      .send({ status: 'degraded', database: false, reason: 'database unreachable' })
   }
 
-  if (!worker) return { status: 'ok', database: true }
+  if (cfg.sink !== 'pgmq') return { status: 'ok', database: true }
 
   let lag = 0
   try {
     lag = (await queue.health()).oldestAgeSec
   } catch {
     // Queue metrics are diagnostics. Failing to read them is not itself a
-    // reason to take a healthy instance out of rotation.
+    // reason to take an otherwise healthy instance out of rotation.
   }
 
-  if (lag > MAX_QUEUE_LAG_SEC) {
+  const owned = worker !== null
+
+  if (owned && lag > cfg.maxQueueLagSec) {
     return reply.code(503).send({
       status: 'degraded',
       database: true,
       queueLagSec: lag,
-      reason: `consumer lag ${lag}s exceeds ${MAX_QUEUE_LAG_SEC}s — worker is not keeping up`,
+      worker: 'in-process',
+      reason: `consumer lag ${lag}s exceeds ${cfg.maxQueueLagSec}s — this worker is not keeping up`,
     })
   }
 
-  return { status: 'ok', database: true, queueLagSec: lag }
+  return {
+    status: 'ok',
+    database: true,
+    queueLagSec: lag,
+    worker: owned ? 'in-process' : 'external',
+  }
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -200,6 +208,34 @@ const worker =
     : null
 
 worker?.start()
+
+// A queue with no consumer strands every message in it, silently. This happens
+// most often by switching INGEST_SINK back to `direct` while messages are still
+// enqueued — nothing errors, the events simply stop arriving and the queue sits
+// there. Warn loudly rather than let it be discovered from a gap in a chart.
+if (cfg.sink === 'pgmq' && !cfg.runWorker) {
+  app.log.warn(
+    'INGEST_SINK=pgmq with INGEST_WORKER=false — this instance will NOT drain the queue. ' +
+      'Ensure a worker runs elsewhere, or enqueued events will never be persisted.',
+  )
+}
+
+if (cfg.sink !== 'pgmq') {
+  void queue
+    .health()
+    .then((h) => {
+      if (h.queueLength > 0) {
+        app.log.warn(
+          { queued: h.queueLength, oldestAgeSec: h.oldestAgeSec },
+          `INGEST_SINK=${cfg.sink} but ${h.queueLength} message(s) are stranded in the pgmq queue. ` +
+            'Set INGEST_SINK=pgmq to drain them.',
+        )
+      }
+    })
+    .catch(() => {
+      // pgmq may not be installed. Not an error when the sink is not pgmq.
+    })
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lifecycle

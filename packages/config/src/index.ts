@@ -310,6 +310,16 @@ export const ingestServerConfig = slice(
       INGEST_SINK: z.enum(['direct', 'pgmq', 'kafka']).default('direct'),
       /** Run the queue worker in this process. Set false to scale it separately. */
       INGEST_WORKER: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
+      /**
+       * Consumer lag, in seconds, past which an instance running the worker
+       * reports itself unready.
+       *
+       * Depth is not the signal — a deep queue draining fast is healthy. The
+       * age of the oldest unread message is what says the worker has stopped
+       * keeping up. 60s sits well above a normal batch (sub-second) and well
+       * below the point anyone would notice missing data.
+       */
+      INGEST_MAX_QUEUE_LAG_SEC: z.coerce.number().int().positive().max(3600).default(60),
     })
     .transform((e) => ({
       port: e.INGEST_PORT,
@@ -319,6 +329,7 @@ export const ingestServerConfig = slice(
       shutdownGraceMs: e.SHUTDOWN_GRACE_MS,
       sink: e.INGEST_SINK,
       runWorker: e.INGEST_WORKER,
+      maxQueueLagSec: e.INGEST_MAX_QUEUE_LAG_SEC,
     })),
 )
 
