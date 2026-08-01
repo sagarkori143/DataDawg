@@ -1,4 +1,4 @@
-﻿import { Dashboard } from '@/components/dashboard'
+import { Dashboard } from '@/components/dashboard'
 
 /**
  * The dashboard lives at `/` here, not `/dashboard`.
