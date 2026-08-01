@@ -108,24 +108,56 @@ NEXT_PUBLIC_CHAT_URL  https://<chat>.vercel.app
 
 ## Railway setup (Path B only)
 
-| Setting | Value |
-|---|---|
-| Repository | `sagarkori143/DataDawg` |
-| Root Directory | `/` (repo root — it needs the whole workspace) |
-| Build Command | `npm ci && npm run build` |
-| Start Command | `node apps/ingest/dist/server.js` |
+Deploy from the GitHub repo. `railway.json` at the root already selects the
+Dockerfile builder, so there is no build or start command to configure — Railway
+builds `docker/Dockerfile.ingest` with the repo root as context.
 
-Environment variables:
+Environment variables — exactly these five:
 
 ```
 DATABASE_URL      <supabase session pooler>
 INGEST_API_KEY    <same value as the web project — they must match>
-INGEST_PORT       $PORT          (Railway injects this)
+INGEST_HOST       ::
 INGEST_SINK       pgmq
 INGEST_WORKER     true
 ```
 
-Health check path: `/readyz`.
+**Do not set `INGEST_PORT`.** Railway injects `PORT`, the config falls back to
+it, and pinning `INGEST_PORT` to anything else silently breaks routing.
+
+### The two things that actually cost an hour here
+
+Both produce the same symptom — Railway reports **"service unavailable"** while
+the deploy log says the server started perfectly. That combination is the tell:
+the process is fine, the platform is knocking on the wrong door.
+
+**1. `0.0.0.0` is not enough — Railway's network is IPv6.**
+
+```
+0.0.0.0  = every IPv4 address     ← Railway's proxy can't reach it
+::       = every address, v4 + v6 ← what it needs
+```
+
+Hence `INGEST_HOST=::`. The log tells you which one you got: `[::]:8080` is
+right, `127.0.0.1:8080` plus a private IPv4 is not.
+
+**2. The port the app binds must equal the port the domain targets.**
+
+Settings → Networking → the domain's target port. If the app listens on 10000
+and the domain targets 8080, every health check fails against a completely
+healthy process. Verify from inside the container rather than guessing:
+
+```sh
+echo "PORT=$PORT"
+wget -qO- http://localhost:$PORT/healthz
+```
+
+A `{"status":"ok"}` on one port and `Connection refused` on the other localises
+it in one command.
+
+**Health check path: `/healthz`, not `/readyz`.** Readiness checks the database,
+so a brief Supabase blip would fail the deploy and roll back a perfectly good
+release. Liveness is dependency-free precisely so it can answer this question.
 
 ---
 
