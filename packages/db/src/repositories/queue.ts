@@ -27,7 +27,21 @@ export async function isAvailable(): Promise<boolean> {
       `SELECT to_regnamespace('pgmq') IS NOT NULL AS ok`,
     )
     return rows[0]?.ok ?? false
-  } catch {
+  } catch (err) {
+    // Do not swallow this silently.
+    //
+    // The caller runs at boot and downgrades to the direct sink when this
+    // returns false. A transient connection failure at exactly that moment
+    // therefore disables the queue for the entire life of the process — and
+    // the only outward sign is `sink: "direct"` in a stats endpoint nobody is
+    // watching. Saying why turns a mystery into a one-line log.
+    console.warn(
+      JSON.stringify({
+        level: 'warn',
+        msg: 'pgmq availability check failed — treating the queue as unavailable',
+        error: (err as Error).message,
+      }),
+    )
     return false
   }
 }
