@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { ModelPicker } from './model-picker'
 import { Sidebar } from './sidebar'
 
 interface Msg {
@@ -381,26 +382,14 @@ export function Chat() {
                   use is visible at the moment of sending rather than parked in
                   a header nobody looks at. */}
               <div className="flex items-center gap-2 px-3 pb-2.5 pt-1">
-                {providers.length > 0 && (
-                  <select
-                    value={choice ? `${choice.provider}:${choice.model}` : ''}
-                    onChange={(e) => {
-                      const [provider, model] = e.target.value.split(':')
-                      if (provider && model) setChoice({ provider, model })
-                    }}
-                    disabled={streaming}
-                    aria-label="Model"
-                    className="cursor-pointer rounded-lg bg-transparent px-1.5 py-1 text-xs text-faint outline-none transition-colors hover:text-muted disabled:opacity-40"
-                  >
-                    {providers.flatMap((p) =>
-                      p.models.map((m) => (
-                        <option key={`${p.name}:${m}`} value={`${p.name}:${m}`} className="bg-raised">
-                          {p.name} / {m}
-                        </option>
-                      )),
-                    )}
-                  </select>
-                )}
+                <ModelPicker
+                  options={providers.flatMap((p) =>
+                    p.models.map((m) => ({ provider: p.name, model: m })),
+                  )}
+                  value={choice}
+                  onChange={setChoice}
+                  disabled={streaming}
+                />
 
                 <span className="ml-auto hidden text-[11px] text-faint sm:inline">
                   {streaming ? 'streaming…' : 'Enter to send · Shift+Enter for newline'}
@@ -412,7 +401,7 @@ export function Chat() {
                     aria-label="Stop generating"
                     className="flex h-8 w-8 items-center justify-center rounded-lg border border-line text-muted transition-colors hover:border-danger/50 hover:text-danger"
                   >
-                    <span className="block h-2.5 w-2.5 rounded-[2px] bg-current" />
+                    <span className="block h-2.5 w-2.5 rounded-xs bg-current" />
                   </button>
                 ) : (
                   <button
@@ -451,7 +440,7 @@ export function Chat() {
 function Welcome() {
   return (
     <div className="flex min-h-[52vh] flex-col items-center justify-center text-center">
-      <h1 className="font-(family-name:--font-serif) text-4xl font-normal tracking-tight text-text sm:text-[42px]">
+      <h1 className="font-serif text-4xl font-normal tracking-tight text-text sm:text-[42px]">
         What can I help with?
       </h1>
       <p className="mt-3.5 max-w-md text-sm leading-relaxed text-faint">
