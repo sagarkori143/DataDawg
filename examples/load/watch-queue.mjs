@@ -22,6 +22,8 @@ const URL_BASE = (arg('url', process.env.INGEST_ENDPOINT ?? 'http://localhost:30
 const KEY = arg('key', process.env.INGEST_API_KEY ?? '')
 const TOTAL = Number(arg('events', '200'))
 const BATCH = Number(arg('batch', '25'))
+/** `--watch` observes only: no events are sent. Run it in a second terminal. */
+const WATCH_ONLY = process.argv.includes('--watch')
 
 const MODELS = [
   ['anthropic', 'claude-opus-5'],
@@ -77,7 +79,7 @@ async function stats() {
 const bar = (n, max = 40) => '█'.repeat(Math.min(n, max)) + (n > max ? `+${n - max}` : '')
 
 console.log(`\n  target   ${URL_BASE}`)
-console.log(`  sending  ${TOTAL} events in batches of ${BATCH}\n`)
+console.log(WATCH_ONLY ? '  mode     watch only — sending nothing. Ctrl+C to stop.\n' : `  sending  ${TOTAL} events in batches of ${BATCH}\n`)
 
 const before = await stats()
 if (!before) {
@@ -90,6 +92,9 @@ if (before.sink !== 'pgmq') {
 
 let sent = 0
 let polling = true
+/** Mutable so a container restart mid-run can re-baseline the worker counters. */
+let baseline = { ...(before.worker ?? {}) }
+let restarted = false
 
 // Poll while the sender runs, so the depth is visible rather than inferred.
 const watcher = (async () => {
@@ -102,8 +107,17 @@ const watcher = (async () => {
       // Deltas, not absolutes. The worker's counters run from container start,
       // so showing them raw makes "sent 9, written 21" — which reads like a
       // bug rather than an earlier run.
+      //
+      // A counter going *backwards* means the container restarted (a redeploy,
+      // or a crash) and its counters reset. Re-baseline to zero rather than
+      // clamping: clamping silently under-reports for the rest of the run,
+      // which looks exactly like the data loss this tool exists to rule out.
       const w = s.worker ?? {}
-      const b = before.worker ?? {}
+      if ((w.eventsWritten ?? 0) < (baseline.eventsWritten ?? 0)) {
+        restarted = true
+        baseline = { eventsWritten: 0, duplicates: 0, errors: 0 }
+      }
+      const b = baseline
       const d = (k) => Math.max(0, (w[k] ?? 0) - (b[k] ?? 0))
       process.stdout.write(
         `\r  sent ${String(sent).padStart(4)}  depth ${String(depth).padStart(3)} ${bar(depth).padEnd(42)}` +
@@ -115,6 +129,11 @@ const watcher = (async () => {
   return peak
 })()
 
+if (WATCH_ONLY) {
+  // Nothing to send. Poll until the user stops it.
+  await new Promise(() => {})
+}
+
 for (let i = 0; i < TOTAL; i += BATCH) {
   const events = Array.from({ length: Math.min(BATCH, TOTAL - i) }, makeEvent)
   await fetch(`${URL_BASE}/v1/events`, {
@@ -125,12 +144,23 @@ for (let i = 0; i < TOTAL; i += BATCH) {
   sent += events.length
 }
 
-// Let the worker finish, then stop.
-const settleStart = Date.now()
-while (Date.now() - settleStart < 15_000) {
+// Wait for the worker to catch up.
+//
+// An empty queue is NOT the finish line: the worker reads a message, then
+// commits, so depth returns to 0 several times mid-run. Exiting on depth === 0
+// stopped the count early and under-reported writes — 165 of 400, which reads
+// like data loss when nothing was lost. Wait for the write count to reach what
+// was sent, and give up only when it genuinely stops moving.
+const baseWritten = baseline.eventsWritten ?? 0
+let lastWritten = -1
+let stalledFor = 0
+while (stalledFor < 12_000) {
   const s = await stats()
-  if ((s?.queue?.queueLength ?? 0) === 0 && Date.now() - settleStart > 2000) break
-  await new Promise((r) => setTimeout(r, 300))
+  const done = (s?.worker?.eventsWritten ?? 0) - (restarted ? 0 : baseWritten)
+  if (done >= sent) break
+  stalledFor = done === lastWritten ? stalledFor + 400 : 0
+  lastWritten = done
+  await new Promise((r) => setTimeout(r, 400))
 }
 
 polling = false
@@ -140,10 +170,26 @@ const after = await stats()
 console.log('\n')
 console.log(`  peak queue depth      ${peak}`)
 console.log(`  messages through queue ${(after?.queue?.totalMessages ?? 0) - (before.queue?.totalMessages ?? 0)}`)
-console.log(`  written by the worker  ${(after?.worker?.eventsWritten ?? 0) - (before.worker?.eventsWritten ?? 0)}`)
-console.log(`  duplicates skipped     ${(after?.worker?.duplicates ?? 0) - (before.worker?.duplicates ?? 0)}`)
-console.log(`  worker errors          ${(after?.worker?.errors ?? 0) - (before.worker?.errors ?? 0)}`)
-console.log(`  depth now              ${after?.queue?.queueLength ?? 0}\n`)
+console.log(`  written by the worker  ${Math.max(0, (after?.worker?.eventsWritten ?? 0) - (baseline.eventsWritten ?? 0))}`)
+console.log(`  duplicates skipped     ${Math.max(0, (after?.worker?.duplicates ?? 0) - (baseline.duplicates ?? 0))}`)
+console.log(`  worker errors          ${Math.max(0, (after?.worker?.errors ?? 0) - (baseline.errors ?? 0))}`)
+if (restarted) {
+  console.log('\n  NOTE: the worker container restarted mid-run, so its counters reset.')
+  console.log('  Counts above are from the restart onward. Query inference_events for the truth.')
+}
+console.log(`  depth now              ${after?.queue?.queueLength ?? 0}`)
+
+// The worker's counters live in the process, so a redeploy or crash resets
+// them and the delta above under-reports. `messages through queue` comes from
+// pgmq's own monotonic counter and is trustworthy; the write count is not.
+// Point at the authoritative check rather than letting a low number read as
+// data loss — it usually isn't, and guessing wasted an hour proving it.
+console.log(`
+  The write count is the worker's in-process counter and resets on redeploy.
+  For the authoritative number, count the rows:
+
+    SELECT count(*) FROM inference_events WHERE created_at > now() - interval '10 minutes';
+`)
 
 // A queue that never showed depth is a queue that was never exercised — worth
 // saying out loud rather than letting a clean run imply more than it proved.
