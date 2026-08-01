@@ -92,8 +92,15 @@ jobs:
             | grep '${{ matrix.app }}' | head -3 >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-  # Proves the images actually run — not just that they build. A container that
-  # builds and then crashes on start is a build that told you nothing.
+  # Proves the images actually RUN — not just that they build. A container that
+  # compiles and then dies on boot is a build that told you nothing.
+  #
+  # The image is rebuilt here rather than pulled from GHCR, reusing the same
+  # layer cache so it costs seconds. Pulling would drag registry visibility
+  # into the test: a newly published GHCR package is private and unlinked from
+  # its repository, so the pull fails on permissions and the failure looks like
+  # a broken container rather than a broken token. Building locally keeps this
+  # job testing the one thing it is meant to test.
   smoke:
     needs: build
     if: github.event_name != 'pull_request'
@@ -102,32 +109,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
 
-      - name: Ingest image starts and answers /healthz
+      - name: Build ingest image locally
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.ingest
+          push: false
+          load: true
+          tags: ollive-ingest:smoke
+          cache-from: type=gha,scope=ingest
+
+      - name: Starts and answers /healthz with NO database
         run: |
-          IMAGE=${{ env.REGISTRY }}/${{ github.repository }}/ingest:sha-${{ github.sha }}
           docker run -d --name ingest -p 3001:3001 \
             -e DATABASE_URL='postgresql://x:x@localhost:5432/x?sslmode=disable' \
             -e INGEST_API_KEY='smoke-test-key' \
-            "$IMAGE"
+            ollive-ingest:smoke
 
           for i in $(seq 1 30); do
             if curl -sf --max-time 2 http://localhost:3001/healthz >/dev/null; then
-              echo "healthz OK after ${i}s"
-              curl -s http://localhost:3001/healthz
+              echo "healthz OK after ${i}s: $(curl -s http://localhost:3001/healthz)"
               exit 0
             fi
             sleep 1
           done
 
-          echo "::error::ingest container did not become healthy"
-          docker logs ingest
+          echo "::error::ingest container never became healthy"
+          echo "--- container logs ---"
+          docker logs ingest 2>&1 | tail -40
+          echo "--- state ---"
+          docker inspect ingest --format 'running={{.State.Running}} exit={{.State.ExitCode}} err={{.State.Error}}'
           exit 1
 
       # /healthz is deliberately dependency-free, so it answers even with no
@@ -145,6 +158,10 @@ jobs:
 
       - name: Graceful shutdown on SIGTERM
         run: |
+          # `docker stop` sends SIGTERM. If CMD were `npm start`, npm would be
+          # PID 1 and would not forward it — the handler would never fire and
+          # the container would be SIGKILLed after the timeout instead.
           docker stop --time 15 ingest
-          docker logs ingest 2>&1 | tail -5
+          echo "--- final logs ---"
+          docker logs ingest 2>&1 | tail -8
           docker inspect ingest --format 'exit code: {{.State.ExitCode}}'
