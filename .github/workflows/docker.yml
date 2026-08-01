@@ -165,3 +165,101 @@ jobs:
           echo "--- final logs ---"
           docker logs ingest 2>&1 | tail -8
           docker inspect ingest --format 'exit code: {{.State.ExitCode}}'
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  #  The bonus item is "Docker Compose ONE-COMMAND setup". Building images
+  #  proves the Dockerfiles work; it does not prove `docker compose up` brings
+  #  up a working stack. This job runs the actual command a reviewer would run,
+  #  from a clean checkout, and asserts the result.
+  # ═══════════════════════════════════════════════════════════════════════════
+  compose:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: docker compose up
+        env:
+          # Enough to boot. No model call is made here — this asserts the stack
+          # starts, migrates, and answers, not that Anthropic is reachable.
+          ANTHROPIC_API_KEY: sk-ant-ci-placeholder
+          INGEST_API_KEY: ci-compose-key
+        run: |
+          docker compose up -d --build
+          docker compose ps
+
+      - name: Migrations ran before anything served traffic
+        run: |
+          # `migrate` is a one-shot with service_completed_successfully gating.
+          # If it did not exit 0, the schema does not exist and everything
+          # downstream is racing it.
+          docker compose logs migrate | tail -20
+          CODE=$(docker inspect --format '{{.State.ExitCode}}' "$(docker compose ps -aq migrate)")
+          echo "migrate exit code: $CODE"
+          [ "$CODE" = "0" ] || { echo "::error::migrations failed"; exit 1; }
+
+      - name: All three services answer
+        env:
+          INGEST_API_KEY: ci-compose-key
+        run: |
+          fail=0
+          check() {
+            for i in $(seq 1 60); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$2" 2>/dev/null || echo 000)
+              [ "$code" = "200" ] && { echo "  OK   $1  ($2)"; return 0; }
+              sleep 2
+            done
+            echo "  FAIL $1  ($2) last=$code"; fail=1
+          }
+          check "ingest  /healthz" http://localhost:3001/healthz
+          check "ingest  /readyz"  http://localhost:3001/readyz
+          check "web     /healthz" http://localhost:3000/api/healthz
+          check "dash    /healthz" http://localhost:3002/api/healthz
+          check "dash    /readyz"  http://localhost:3002/api/readyz
+
+          if [ "$fail" != "0" ]; then
+            echo "--- logs ---"; docker compose logs --tail 40
+            exit 1
+          fi
+
+      - name: Telemetry survives the full stack end to end
+        run: |
+          # Post a batch at the real ingestion service, through the pgmq sink
+          # compose configures, and assert it lands in Postgres. This is the
+          # whole pipeline: HTTP -> validate -> price -> queue -> worker -> DB.
+          curl -sS -X POST http://localhost:3001/v1/events \
+            -H 'Content-Type: application/json' \
+            -H 'Authorization: Bearer ci-compose-key' \
+            -d '{
+              "sdk":{"name":"ci","version":"0.1.0"},
+              "sentAt":"2026-01-01T00:00:00.000Z",
+              "events":[{
+                "eventId":"0193b5e0-1c4a-7000-8000-0000000000ff",
+                "schemaVersion":1,"provider":"anthropic","model":"claude-opus-5",
+                "status":"ok","startedAt":"2026-01-01T00:00:00.000Z",
+                "endedAt":"2026-01-01T00:00:01.000Z","latencyMs":1000,
+                "inputTokens":10,"outputTokens":20
+              }]}' | tee /tmp/ack.json
+          echo
+
+          for i in $(seq 1 20); do
+            N=$(docker compose exec -T db psql -U postgres -d ollive -tAc \
+                 "SELECT count(*) FROM inference_events WHERE event_id='0193b5e0-1c4a-7000-8000-0000000000ff'" 2>/dev/null || echo 0)
+            if [ "$N" = "1" ]; then
+              echo "event persisted after ${i}s"
+              docker compose exec -T db psql -U postgres -d ollive -c \
+                "SELECT provider, model, status, latency_ms, cost_usd, pricing_version FROM inference_events WHERE event_id='0193b5e0-1c4a-7000-8000-0000000000ff'"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::event never reached the database"
+          docker compose logs ingest --tail 40
+          exit 1
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
