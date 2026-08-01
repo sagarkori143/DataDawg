@@ -78,6 +78,18 @@ takes a session-scoped `pg_advisory_lock` so two deploys cannot migrate at once,
 and transaction mode supports neither session-scoped advisory locks nor prepared
 statements.
 
+**The session pooler solves IPv4 reachability, not connection scaling.** Those
+are two different problems that Supabase happens to solve with one product, and
+conflating them is an easy mistake. Session mode maps each client connection to
+a dedicated Postgres backend — 1:1, no multiplexing. Only **transaction mode**
+(6543) borrows a backend per transaction and lets hundreds of clients share a
+few dozen backends.
+
+So the scaling fix is two connection strings, not one: the app moves to
+transaction mode, while migrations stay on session mode because they need the
+advisory lock. See the connection-limit section in
+[docs/architecture.md](docs/architecture.md#35-the-connection-ceiling).
+
 ---
 
 ## What's here

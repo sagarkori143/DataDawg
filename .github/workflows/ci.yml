@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Typecheck every package via project references. This is the check that
+      # catches a contract change breaking a consumer — the whole reason the
+      # event schema lives in one place.
+      - run: npm run build
+
+      # Unit tests only. Nothing here touches a database or a model API, so CI
+      # needs no secrets and cannot flake on someone else's rate limit.
+      - run: npm test
+
+      # The web app is typechecked separately: it uses Bundler module
+      # resolution and JSX, so it is outside the `tsc -b` project graph.
+      - run: npm run build --workspace @ollive/web
+        env:
+          # Build-time only. The app reads real config at runtime; these exist
+          # so Next can statically analyse the route handlers without a
+          # database or a live key.
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci?sslmode=disable
+          ANTHROPIC_API_KEY: sk-ant-ci-placeholder
+          INGEST_API_KEY: ci-placeholder

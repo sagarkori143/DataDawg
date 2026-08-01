@@ -49,16 +49,57 @@ const app = Fastify({
 app.get('/healthz', async () => ({ status: 'ok', uptime: process.uptime() }))
 
 /**
+ * How stale the oldest unread message may get before this instance is
+ * considered unfit to serve.
+ *
+ * Depth alone is not the signal — a deep queue draining fast is healthy. The
+ * age of the oldest unread message is what says the worker has stopped keeping
+ * up. 60s is comfortably above a normal batch (sub-second) and well below the
+ * point at which anyone would notice missing data.
+ */
+const MAX_QUEUE_LAG_SEC = 60
+
+/**
  * Readiness: can this process serve traffic?
  *
- * This one does check the database, because an instance that cannot write is
- * useless as an ingestion endpoint. Returning 503 takes it out of rotation
- * without restarting it.
+ * Checks the database, because an instance that cannot write is useless as an
+ * ingestion endpoint — and, when running the queue worker, checks consumer lag
+ * too.
+ *
+ * That second check closes a real gap. A worker that has wedged still answers
+ * `/healthz` perfectly: the process is alive, the HTTP server responds, and the
+ * queue silently grows while the instance reports itself healthy. Liveness
+ * cannot catch it, because restarting is the wrong response — the process is
+ * fine. Readiness can: the instance is pulled from rotation, traffic moves to a
+ * peer whose worker is draining, and nothing is lost because the queue holds
+ * the backlog.
  */
 app.get('/readyz', async (_req, reply) => {
   const dbOk = await ping()
-  if (!dbOk) return reply.code(503).send({ status: 'degraded', database: false })
-  return { status: 'ok', database: true }
+  if (!dbOk) {
+    return reply.code(503).send({ status: 'degraded', database: false, reason: 'database unreachable' })
+  }
+
+  if (!worker) return { status: 'ok', database: true }
+
+  let lag = 0
+  try {
+    lag = (await queue.health()).oldestAgeSec
+  } catch {
+    // Queue metrics are diagnostics. Failing to read them is not itself a
+    // reason to take a healthy instance out of rotation.
+  }
+
+  if (lag > MAX_QUEUE_LAG_SEC) {
+    return reply.code(503).send({
+      status: 'degraded',
+      database: true,
+      queueLagSec: lag,
+      reason: `consumer lag ${lag}s exceeds ${MAX_QUEUE_LAG_SEC}s — worker is not keeping up`,
+    })
+  }
+
+  return { status: 'ok', database: true, queueLagSec: lag }
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
