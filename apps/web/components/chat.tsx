@@ -226,7 +226,9 @@ export function Chat() {
       <div className="flex min-w-0 flex-1 flex-col">
       <header className="flex items-center justify-between border-b border-[--color-edge] px-6 py-3">
         <div className="flex items-baseline gap-3">
-          <span className="text-sm font-semibold tracking-tight">Ollive</span>
+          <span className="text-sm font-semibold tracking-tight">
+            Data<span className="text-[--color-accent]">Dawg</span>
+          </span>
           {process.env.NEXT_PUBLIC_DASHBOARD_URL && (
             <a
               href={process.env.NEXT_PUBLIC_DASHBOARD_URL}
