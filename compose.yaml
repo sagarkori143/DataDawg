@@ -10,7 +10,12 @@
 
 services:
   db:
-    image: postgres:17-alpine
+    # NOT postgres:alpine — that image has no pgmq, and the queue sink needs it.
+    # This is the upstream pgmq distribution: plain Postgres 17 with the
+    # extension available. The migration degrades gracefully without it, but
+    # then `docker compose up` would silently run the direct sink and the
+    # event-bus path would never be exercised.
+    image: quay.io/tembo/pg17-pgmq:latest
     environment:
       POSTGRES_PASSWORD: ollive
       POSTGRES_DB: ollive

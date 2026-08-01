@@ -14,6 +14,25 @@ import { query } from '../pool.js'
 export const QUEUE_NAME = 'inference_events'
 
 /**
+ * Is pgmq actually installed?
+ *
+ * It is not part of core Postgres — Supabase and the tembo images ship it,
+ * stock `postgres:alpine` does not. The ingestion service checks this at boot
+ * and falls back to the direct sink rather than accepting events it has no
+ * queue to put them in, which would drop them silently.
+ */
+export async function isAvailable(): Promise<boolean> {
+  try {
+    const { rows } = await query<{ ok: boolean }>(
+      `SELECT to_regnamespace('pgmq') IS NOT NULL AS ok`,
+    )
+    return rows[0]?.ok ?? false
+  } catch {
+    return false
+  }
+}
+
+/**
  * Visibility timeout, in seconds.
  *
  * How long a message stays hidden after being read. Too short and a slow batch

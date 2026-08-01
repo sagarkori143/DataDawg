@@ -18,7 +18,19 @@ import { QueueWorker } from './worker.js'
  * lifecycle, and nothing else.
  */
 
-const cfg = ingestServerConfig()
+const cfgRaw = ingestServerConfig()
+
+/**
+ * Resolve the sink against what the database can actually do.
+ *
+ * Configuring `pgmq` on a Postgres without the extension would let the service
+ * start, accept events, and fail on every enqueue — dropping telemetry while
+ * reporting healthy. Checking once at boot and degrading to `direct` keeps the
+ * pipeline working on any Postgres, and says so rather than doing it quietly.
+ */
+const queueAvailable = cfgRaw.sink === 'pgmq' ? await queue.isAvailable() : false
+const effectiveSink = cfgRaw.sink === 'pgmq' && !queueAvailable ? 'direct' : cfgRaw.sink
+const cfg = { ...cfgRaw, sink: effectiveSink }
 const runtime = runtimeConfig()
 const telemetry = telemetryConfig()
 
@@ -208,6 +220,14 @@ const worker =
     : null
 
 worker?.start()
+
+if (cfgRaw.sink === 'pgmq' && !queueAvailable) {
+  app.log.warn(
+    'INGEST_SINK=pgmq but the pgmq extension is not installed on this database — ' +
+      'falling back to direct writes. Use a pgmq-enabled Postgres ' +
+      '(Supabase, or quay.io/tembo/pg17-pgmq) to enable the queue.',
+  )
+}
 
 // A queue with no consumer strands every message in it, silently. This happens
 // most often by switching INGEST_SINK back to `direct` while messages are still

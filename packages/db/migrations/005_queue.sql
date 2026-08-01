@@ -31,15 +31,36 @@
 -- when the worker consumes a message, because by then the data is durable.
 -- ════════════════════════════════════════════════════════════════════════════
 
-CREATE EXTENSION IF NOT EXISTS pgmq;
-
--- pgmq.create() raises if the queue exists, so guard it: migrations must be
--- safe to re-run against a database that is already partly set up.
+-- ── pgmq may not exist, and that must not be fatal ──────────────────────────
+--
+-- pgmq is not part of core Postgres. Supabase and the tembo images ship it;
+-- stock `postgres:17-alpine` does not. A hard `CREATE EXTENSION` would make
+-- this migration — and therefore the whole application — refuse to start on
+-- any ordinary Postgres.
+--
+-- So the queue is optional infrastructure. When pgmq is absent the migration
+-- succeeds without it, and the ingestion service detects that at boot and
+-- falls back to `INGEST_SINK=direct` with a loud warning. Degrading to the
+-- simpler path beats refusing to run.
 DO $$
 BEGIN
-  PERFORM pgmq.create('inference_events');
+  CREATE EXTENSION IF NOT EXISTS pgmq;
+
+  -- pgmq.create() raises if the queue exists, so guard that too: migrations
+  -- must be safe to re-run against a partly-provisioned database.
+  BEGIN
+    PERFORM pgmq.create('inference_events');
+  EXCEPTION
+    WHEN duplicate_table OR duplicate_object THEN NULL;
+  END;
+
+  RAISE NOTICE 'pgmq installed — INGEST_SINK=pgmq is available';
 EXCEPTION
-  WHEN duplicate_table OR duplicate_object THEN NULL;
+  WHEN undefined_file OR insufficient_privilege OR feature_not_supported THEN
+    RAISE WARNING
+      'pgmq is not available on this Postgres. The queue sink is disabled; '
+      'INGEST_SINK=pgmq will fall back to direct writes. '
+      'Use a pgmq-enabled image (Supabase, or quay.io/tembo/pg17-pgmq) to enable it.';
 END
 $$;
 
@@ -50,16 +71,15 @@ $$;
 -- Depth alone is not the signal — a deep queue draining fast is healthy. The
 -- number that matters is the AGE of the oldest unread message: that is
 -- consumer lag, and it is what says the worker has stopped keeping up.
-CREATE OR REPLACE VIEW queue_health AS
-SELECT
-  m.queue_name,
-  m.queue_length,
-  m.total_messages,
-  -- Seconds the oldest unprocessed message has been waiting.
-  COALESCE(EXTRACT(EPOCH FROM (now() - m.oldest_msg_age_sec::text::interval)), 0)::int
-    AS oldest_age_sec,
-  m.newest_msg_age_sec
-FROM pgmq.metrics('inference_events') m;
-
-COMMENT ON VIEW queue_health IS
-  'Consumer lag for the ingestion queue. Depth alone is not a problem; the age of the oldest unread message is.';
+DO $$
+BEGIN
+  IF to_regnamespace('pgmq') IS NOT NULL THEN
+    EXECUTE $view$
+      CREATE OR REPLACE VIEW queue_health AS
+      SELECT m.queue_name, m.queue_length, m.total_messages,
+             m.oldest_msg_age_sec AS oldest_age_sec, m.newest_msg_age_sec
+        FROM pgmq.metrics('inference_events') m
+    $view$;
+  END IF;
+END
+$$;
