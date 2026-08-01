@@ -99,10 +99,15 @@ const watcher = (async () => {
     if (s) {
       const depth = s.queue?.queueLength ?? 0
       peak = Math.max(peak, depth)
+      // Deltas, not absolutes. The worker's counters run from container start,
+      // so showing them raw makes "sent 9, written 21" — which reads like a
+      // bug rather than an earlier run.
       const w = s.worker ?? {}
+      const b = before.worker ?? {}
+      const d = (k) => Math.max(0, (w[k] ?? 0) - (b[k] ?? 0))
       process.stdout.write(
         `\r  sent ${String(sent).padStart(4)}  depth ${String(depth).padStart(3)} ${bar(depth).padEnd(42)}` +
-          ` written ${w.eventsWritten ?? 0}  dup ${w.duplicates ?? 0}  err ${w.errors ?? 0}   `,
+          ` written ${d('eventsWritten')}  dup ${d('duplicates')}  err ${d('errors')}   `,
       )
     }
     await new Promise((r) => setTimeout(r, 300))
