@@ -1,0 +1,47 @@
+# Fly.io — the ingestion service.
+#
+# Web and dashboard go to Vercel. This one cannot: it runs the pgmq worker
+# in-process, and Vercel freezes a function the moment it returns a response.
+# A queue with no drainer is just a table that grows.
+
+app = "datadawg-ingest"
+primary_region = "sin"
+
+[build]
+  # Repo root is the context. The apps import packages/*, so a context scoped
+  # to apps/ingest cannot see them.
+  dockerfile = "docker/Dockerfile.ingest"
+
+[env]
+  INGEST_PORT = "3001"
+  NODE_ENV = "production"
+  # The whole reason this service exists on its own host.
+  INGEST_SINK = "pgmq"
+  INGEST_WORKER = "true"
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+
+  # Both deliberate. Fly's default is to stop idle machines and cold-start them
+  # on the next request — fine for a plain API, wrong here: the worker would
+  # sleep, the queue would back up, and the dashboard would flatline while
+  # everything looked healthy.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    # /healthz, not /readyz. Readiness checks the database, so a brief blip
+    # would take the machine out of rotation and there is nowhere else for the
+    # traffic to go. Liveness is dependency-free on purpose.
+    path = "/healthz"
+    method = "GET"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "20s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  # 256MB is enough to idle but leaves nothing for a burst of batch inserts.
+  memory = "512mb"
