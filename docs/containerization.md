@@ -1,16 +1,34 @@
 # Containerization
 
-> ## ⚠️ DESIGNED, NOT EXECUTED
+> ## Status: built and verified in CI — except k8s
 >
-> **Nothing in this file has been run.** The build machine had no container
-> runtime — no Docker, no WSL2 distribution, no `kubectl`. These artifacts are
-> written from the architecture, not verified against it.
+> **Docker: done.** `docker/Dockerfile.{web,dashboard,ingest}` and
+> `compose.yaml` are real, and every push builds all three images, publishes
+> them to GHCR, and runs the full stack. See `.github/workflows/docker.yml`.
 >
-> They are here because the design decisions are real and worth reviewing. They
-> are **not committed as working files**, because a `compose.yaml` in the repo
-> root implies `docker compose up` works, and a reviewer who runs it and hits an
-> error learns something bad about everything else in the repo. An unverifiable
-> claim is worse than a stated gap.
+> **This machine still has no container runtime.** The verification happens on
+> the GitHub Actions runner, which does — so the Dockerfiles are exercised on
+> every commit rather than trusted.
+>
+> **k8s: still designed, not executed.** The manifests below are written from
+> the architecture. There is no cluster to apply them to, and they are
+> deliberately not committed as applyable files: a `k8s/` directory implies
+> `kubectl apply` works, and a reviewer who tries it and fails learns something
+> bad about everything else in the repo.
+
+## What CI actually asserts
+
+| Check | Why it is the check that matters |
+|---|---|
+| All three images build | The Dockerfiles work — including the monorepo build order |
+| Container starts with **no database** | It boots rather than crashing on a missing dependency |
+| `/healthz` → **200** without a database | Liveness is genuinely dependency-free |
+| `/readyz` → **503** without a database | Readiness genuinely differs. **Both returning 200 would make the split decorative** |
+| `docker stop` exits cleanly | SIGTERM reaches the process — proving `CMD ["node", …]` rather than `npm start` |
+| `docker compose up` | The one-command setup actually works from a clean checkout |
+| `db:verify` **inside the container** | The schema landed: partitions, BRIN, histograms, monotonic UUIDv7 |
+| `pgmq=true` | The queue is live. Migration 005 degrades gracefully without it, so the stack could otherwise come up on the direct sink and look green while never exercising the event bus |
+| Event round-trip | POST → validate → price → **queue → worker** → Postgres, read back by primary key |
 
 ---
 

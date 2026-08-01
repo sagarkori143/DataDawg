@@ -1,4 +1,4 @@
-# Ollive — inference logging & ingestion
+# DataDawg — inference logging & ingestion
 
 A chatbot, and the observability pipeline watching it.
 
@@ -20,6 +20,14 @@ that answers questions about them cheaply.
 
 Three services. The dashboard shares no runtime with the chat app — kill it and
 chat is untouched, which is verified rather than asserted.
+
+[![CI](https://github.com/sagarkori143/DataDawg/actions/workflows/ci.yml/badge.svg)](https://github.com/sagarkori143/DataDawg/actions/workflows/ci.yml)
+[![Docker](https://github.com/sagarkori143/DataDawg/actions/workflows/docker.yml/badge.svg)](https://github.com/sagarkori143/DataDawg/actions/workflows/docker.yml)
+
+The Docker badge is the load-bearing one: it goes green only if
+`docker compose up` brings up the whole stack, the schema verifies **inside the
+container**, and a telemetry event survives the trip from HTTP through the queue
+into Postgres.
 
 ---
 
@@ -45,11 +53,28 @@ data rather than taken on trust.
 
 ## Quick start
 
+### One command, with Docker
+
+Brings up Postgres (with `pgmq`), runs migrations, and starts all three
+services. Nothing to install but Docker.
+
+```bash
+git clone https://github.com/sagarkori143/DataDawg.git && cd DataDawg
+cp .env.example .env        # ANTHROPIC_API_KEY is the only required value
+docker compose up
+```
+
+This exact sequence runs on every push — see the `compose` job in
+[.github/workflows/docker.yml](.github/workflows/docker.yml). It is asserted, not
+assumed.
+
+### Or without Docker
+
 **Prerequisites:** Node ≥ 22, a Postgres 14+ database, and at least one model
 API key.
 
 ```bash
-git clone <repo> && cd ollive
+git clone https://github.com/sagarkori143/DataDawg.git && cd DataDawg
 npm install
 cp .env.example .env        # fill in DATABASE_URL and ANTHROPIC_API_KEY
 npm run build
@@ -254,34 +279,39 @@ library. This does not cover that case, and says so rather than implying it does
 up to one flush interval of events is gone. Right for telemetry, wrong for money
 — that would need a disk-backed write-ahead log before acknowledging.
 
-**Containers deferred, not designed out.** No container runtime was available on
-the build machine, and spending five of roughly sixteen hours on a toolchain
-install would have cost the dashboards and PII redaction. Every service already
-reads config from the environment, holds no local state, exposes distinct
-liveness and readiness probes, and drains on SIGTERM — the four things that
-actually make a service container-ready. See
-**[docs/containerization.md](docs/containerization.md)**, which is explicit that
-those manifests are **designed, not executed**. Shipping a `compose.yaml` that
-has never been run would be worse than not shipping one.
+**Containers are built and verified in CI, not on this machine.** The build
+machine has no container runtime, so `docker compose up` was never run locally.
+Rather than ship a `compose.yaml` that had never executed, the verification moved
+to a GitHub Actions runner that *does* have Docker. Every push builds all three
+images, publishes them to GHCR, and runs the real stack:
+`docker compose up` → migrate → **`db:verify` inside the image** → all three
+services answer → a telemetry event posted at the ingestion service travels
+through **pgmq**, through the worker, and is read back out of Postgres.
+
+That last assertion is the one worth having. Building an image proves a
+Dockerfile compiles; it says nothing about whether the stack works. The CI also
+asserts `/healthz` returns **200 without a database** and `/readyz` returns
+**503** — if both returned 200, the liveness/readiness split would be
+decorative, and the k8s probes below it would be too.
+
+**Kubernetes is still designed, not executed.** There is no cluster to apply
+manifests to, so [docs/containerization.md](docs/containerization.md) keeps them
+as a design document rather than an applyable `k8s/` directory. An unexplained
+gap reads better than an unverifiable claim.
 
 ---
 
 ## What I'd improve with more time
 
-1. **An event bus — not built.** Ingestion `await`s the insert, so ingest
-   latency is database latency. There is no `EventBus` interface in the code
-   today; the `202 Accepted` status and the framework-free `ingest-core`
-   boundary are where one would slot in, but that is a seam by shape, not an
-   abstraction that exists.
-
-   **`pgmq` 1.5.1 is available on this Supabase project** (confirmed against the
-   live instance, not installed). It is a real message queue inside Postgres
-   with SQS semantics — visibility timeouts, archive-on-delete, long polling —
-   so it needs **zero additional infrastructure**. That, not Kafka, is the right
-   next step here: Kafka earns its operational cost when you need partitioned
-   ordering and multi-consumer replay, neither of which this workload has.
-2. **Actually run the containers.** Install Docker, verify `compose.yaml`, then
-   k3d. The seams are in; only the verification is missing.
+1. **Kafka, when a second consumer appears.** The `EventSink` seam and the pgmq
+   implementation are built; `KafkaSink` deliberately throws rather than
+   pretending. The threshold is written down in `sink.ts` and it is not
+   throughput — pgmq handles far more than this workload. It is **fan-out**: a
+   queue deletes a message once it is read, so the moment a second service needs
+   the same events (alerting, a warehouse loader), one consumer starves the
+   other. A log, not a queue, is what solves that.
+2. **Run the k8s manifests.** `k3d cluster create`, apply, capture
+   `kubectl get all`. Docker is verified in CI; k8s is the part still on paper.
 3. **Cost accuracy for OpenAI.** Anthropic prices are from the published list;
    the OpenAI figures are marked unverified in `pricing.ts` rather than quietly
    presented as fact.
