@@ -111,7 +111,11 @@ body {
   background-clip: content-box;
 }
 
-:focus-visible {
+/* The composer textarea is excluded: its wrapper already lights up via
+   `focus-within`, so a second ring here draws a box inside a box. Everything
+   else keeps the ring — losing it would cost keyboard users the only cue they
+   have about where they are. */
+:focus-visible:not(textarea) {
   outline: 2px solid var(--color-clay);
   outline-offset: 2px;
   border-radius: 6px;

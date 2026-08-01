@@ -434,11 +434,6 @@ export function Chat() {
                 )}
               </div>
             </div>
-
-            <p className="mt-2.5 text-center text-[11px] text-faint">
-              Every call is timed and measured. Telemetry ships out of band — it never blocks this
-              conversation.
-            </p>
           </div>
         </div>
       </div>
