@@ -28,10 +28,15 @@ COPY packages ./packages
 COPY apps/web ./apps/web
 
 # Workspace packages compile to dist/ and Next resolves @ollive/* to those.
-# Without this step the build fails with "Module not found: Can't resolve
+# Without this the build fails with "Module not found: Can't resolve
 # '@ollive/db'" — the classic monorepo container trap, invisible locally
 # because dist/ already exists there.
-RUN npm run build
+#
+# Build the PACKAGES explicitly rather than running the root `npm run build`.
+# The root tsconfig references ./apps/ingest as well, and this image
+# deliberately does not copy that directory — so `tsc -b` at the root would
+# fail looking for a service this image has no business containing.
+RUN npx tsc -b       packages/contracts       packages/config       packages/db       packages/sdk       packages/providers       packages/ingest-core
 
 # Placeholders only. Next needs config to statically analyse route handlers at
 # build time; every real value is injected at runtime.
