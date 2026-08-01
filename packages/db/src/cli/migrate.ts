@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { closePool } from '../pool.js'
-import { migrate, reset } from '../migrate.js'
+import { migrate, repair, reset } from '../migrate.js'
 
 /**
  * `npm run db:migrate` / `npm run db:reset`
@@ -12,11 +12,20 @@ import { migrate, reset } from '../migrate.js'
  */
 
 const wantsReset = process.argv.includes('--reset')
+const wantsRepair = process.argv.includes('--repair')
 
 try {
   if (wantsReset) {
     console.log('\nResetting database…')
     await reset()
+  }
+
+  if (wantsRepair) {
+    // Only ever for an edit that is a no-op on already-migrated databases.
+    // Anything else needs a new migration, not a re-recorded checksum.
+    console.log('\nRepairing checksums…')
+    const fixed = await repair()
+    console.log(fixed.length === 0 ? '  nothing to repair' : `  ${fixed.length} re-recorded`)
   }
 
   console.log('\nApplying migrations…')

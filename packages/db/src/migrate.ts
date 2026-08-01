@@ -131,6 +131,51 @@ export async function migrate(log: (msg: string) => void = console.log): Promise
 }
 
 /**
+ * Re-record checksums for already-applied migrations.
+ *
+ * The checksum guard exists to catch the dangerous case: a migration edited
+ * after it ran, so different environments silently hold different schemas.
+ * Refusing loudly is the right default.
+ *
+ * There is one legitimate exception — an edit that changes what a migration
+ * does on a *fresh* database while leaving an already-migrated one unaffected.
+ * Making `CREATE EXTENSION pgmq` tolerant of a Postgres that lacks it is
+ * exactly that: databases where it already succeeded are identical either way.
+ *
+ * Flyway calls this `repair`, and it is worth having as a named command rather
+ * than a hand-edited UPDATE, because the reasoning should be visible in the
+ * repo instead of living in someone's shell history.
+ *
+ * **Verify the edit is truly a no-op for applied databases before running it.**
+ * If it is not, the honest fix is a new migration.
+ */
+export async function repair(log: (msg: string) => void = console.log): Promise<string[]> {
+  const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith('.sql')).sort()
+  const repaired: string[] = []
+
+  await ensureMigrationsTable()
+
+  const { rows } = await getPool().query<{ name: string; checksum: string }>(
+    'SELECT name, checksum FROM _migrations',
+  )
+  const previous = new Map(rows.map((r) => [r.name, r.checksum]))
+
+  for (const file of files) {
+    const recorded = previous.get(file)
+    if (!recorded) continue
+
+    const sum = checksum(await readFile(join(MIGRATIONS_DIR, file), 'utf8'))
+    if (sum === recorded) continue
+
+    await getPool().query('UPDATE _migrations SET checksum = $2 WHERE name = $1', [file, sum])
+    repaired.push(file)
+    log(`  ~ ${file}  ${recorded} → ${sum}`)
+  }
+
+  return repaired
+}
+
+/**
  * Drop everything and start over. Development only.
  *
  * Guarded against NODE_ENV=production because the one thing worse than no reset

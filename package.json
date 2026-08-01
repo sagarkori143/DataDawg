@@ -26,7 +26,8 @@
     "db:verify": "npm run verify --workspace @ollive/db",
     "load": "node examples/load/generate.mjs",
     "zero-code": "node --import @ollive/sdk/register examples/zero-code/app.mjs",
-    "dev:dashboard": "npm run dev --workspace @ollive/dashboard"
+    "dev:dashboard": "npm run dev --workspace @ollive/dashboard",
+    "db:repair": "npm run repair --workspace @ollive/db"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

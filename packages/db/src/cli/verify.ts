@@ -102,13 +102,40 @@ try {
   }
 
   console.log('\nUUIDv7 is time-ordered')
-  const { rows: ids } = await query<{ a: string; b: string }>(
-    `SELECT uuidv7()::text AS a, uuidv7()::text AS b`,
+  // Time-ordering is the whole reason v7 was chosen over v4: ascending ids
+  // append to the right-hand edge of the B-tree instead of scattering across
+  // it. If this ever regresses, the index degrades silently.
+  //
+  // The original implementation used a millisecond timestamp only, so ids
+  // minted inside one millisecond were ordered by their random tail — a coin
+  // flip. Migration 006 moved 12 bits to sub-millisecond precision (~244ns).
+  // Both checks below would have failed against the old version.
+  const first = await query<{ id: string }>(`SELECT uuidv7()::text AS id`)
+  await new Promise((r) => setTimeout(r, 5))
+  const second = await query<{ id: string }>(`SELECT uuidv7()::text AS id`)
+
+  check(
+    'ids minted 5ms apart sort ascending',
+    first.rows[0]!.id < second.rows[0]!.id,
+    'index locality depends on this',
+  )
+
+  // The real test: 500 ids minted back to back, no sleep at all.
+  //
+  // This is the batch-insert case — 50 events land inside the same
+  // millisecond — and it is precisely where the original millisecond-only
+  // implementation gave no ordering whatsoever. With sub-millisecond
+  // precision (migration 006) they strictly increase.
+  const { rows: batch } = await query<{ ordered: boolean; n: number }>(
+    `WITH ids AS (SELECT n, uuidv7()::text AS id FROM generate_series(1, 500) n)
+     SELECT bool_and(id > prev) AS ordered, count(*)::int AS n
+       FROM (SELECT id, lag(id) OVER (ORDER BY n) AS prev FROM ids) t
+      WHERE prev IS NOT NULL`,
   )
   check(
-    'sequential ids sort ascending',
-    ids[0]!.a < ids[0]!.b,
-    'index locality depends on this',
+    '500 ids minted back-to-back are strictly increasing',
+    batch[0]?.ordered === true,
+    'the batch-insert case — same millisecond, still ordered',
   )
 
   console.log(failures === 0 ? '\nSchema verified.\n' : `\n${failures} check(s) FAILED.\n`)
