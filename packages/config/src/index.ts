@@ -285,7 +285,25 @@ export const ingestServerConfig = slice(
   'ingest-server',
   z
     .object({
-      INGEST_PORT: z.coerce.number().int().positive().max(65_535).default(3001),
+      /**
+       * `PORT` is what every PaaS injects — Railway, Render, Heroku, App Runner
+       * all assign a port and route to it. Binding a hardcoded 3001 while the
+       * platform knocks on its own port produces a health check that fails with
+       * "service unavailable" against a process that started perfectly, which
+       * is a genuinely confusing hour.
+       *
+       * Precedence is explicit-over-injected: INGEST_PORT wins when set, so
+       * compose and local dev keep their fixed port, and a PaaS needs no
+       * configuration at all.
+       */
+      INGEST_PORT: z.coerce
+        .number()
+        .int()
+        .positive()
+        .max(65_535)
+        .default(Number(process.env.PORT) || 3001),
+      // Not `localhost`. A container binding to the loopback interface is
+      // unreachable from outside it, which looks identical to a crash.
       INGEST_HOST: z.string().default('0.0.0.0'),
       INGEST_API_KEY: z.string().min(1, 'required — the SDK authenticates with this'),
       /** Rejected at the edge with 413. A 500-event batch of 2KB previews is ~1MB; 4MB is generous headroom. */
