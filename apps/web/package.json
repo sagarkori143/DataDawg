@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "next lint",
-    "vercel-build": "npm --prefix ../.. run build && next build"
+    "vercel-build": "npm --prefix ../.. run build:packages && next build"
   },
   "dependencies": {
     "@ollive/config": "*",
