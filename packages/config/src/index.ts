@@ -298,6 +298,18 @@ export const ingestServerConfig = slice(
        * arrive: without it, every deploy silently drops whatever was buffered.
        */
       SHUTDOWN_GRACE_MS: z.coerce.number().int().positive().max(60_000).default(10_000),
+      /**
+       * Where accepted events go.
+       *
+       *   direct  await the insert. Ingest latency IS database latency.
+       *   pgmq    enqueue and return; a worker persists. A database blip
+       *           queues work instead of returning 503.
+       *   kafka   not implemented — see packages/ingest-core/src/sink.ts for
+       *           the thresholds at which it would be.
+       */
+      INGEST_SINK: z.enum(['direct', 'pgmq', 'kafka']).default('direct'),
+      /** Run the queue worker in this process. Set false to scale it separately. */
+      INGEST_WORKER: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
     })
     .transform((e) => ({
       port: e.INGEST_PORT,
@@ -305,6 +317,8 @@ export const ingestServerConfig = slice(
       apiKey: e.INGEST_API_KEY,
       maxBodyBytes: e.INGEST_MAX_BODY_BYTES,
       shutdownGraceMs: e.SHUTDOWN_GRACE_MS,
+      sink: e.INGEST_SINK,
+      runWorker: e.INGEST_WORKER,
     })),
 )
 

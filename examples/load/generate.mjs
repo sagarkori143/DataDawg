@@ -185,13 +185,43 @@ console.log()
 
 // ── prove the guarantees, don't just claim them ─────────────────────────────
 
-// 1. Idempotency: resend a batch verbatim. Accepted must be 0, duplicates the
-//    full count — this is what makes at-least-once delivery safe.
-const replay = await post(all.slice(0, Math.min(BATCH, all.length)))
-console.log(
-  `\n  idempotency : replayed ${Math.min(BATCH, all.length)} → accepted=${replay.accepted} duplicates=${replay.duplicates}` +
-    (replay.accepted === 0 ? '  OK' : '  ** LEAK **'),
-)
+// 1. Idempotency: resend a batch verbatim.
+//
+//    Where the evidence lives depends on the sink, and getting this wrong is an
+//    easy way to write a test that fails for the wrong reason:
+//
+//      direct  the endpoint has already done the insert, so it can report
+//              accepted=0 duplicates=N.
+//      pgmq    the endpoint only queued the batch. It cannot know they are
+//              duplicates yet, so accepted=N is CORRECT — the dedupe happens
+//              in the worker, and the proof is the row count.
+//
+//    That difference is why the endpoint returns 202 rather than 200.
+const replayCount = Math.min(BATCH, all.length)
+const replay = await post(all.slice(0, replayCount))
+
+if (replay.deferred) {
+  // Let the worker drain, then check the database rather than the ack.
+  await new Promise((r) => setTimeout(r, 4000))
+  const stats = await fetch(`${ENDPOINT}/v1/queue`, {
+    headers: API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {},
+  })
+    .then((r) => (r.ok ? r.json() : null))
+    .catch(() => null)
+
+  const dupes = stats?.worker?.duplicates ?? 0
+  console.log(
+    `\n  idempotency : sink=${replay.sink} (deferred) → queued ${replay.accepted}, ` +
+      `worker absorbed ${dupes} duplicate(s)` +
+      (dupes >= replayCount ? '  OK' : '  ** check the worker **'),
+  )
+  console.log(`                queue depth now ${stats?.queue?.queueLength ?? '?'}`)
+} else {
+  console.log(
+    `\n  idempotency : sink=${replay.sink} → accepted=${replay.accepted} duplicates=${replay.duplicates}` +
+      (replay.accepted === 0 ? '  OK' : '  ** LEAK **'),
+  )
+}
 
 // 2. DLQ: one deliberately malformed event. It must be parked, and the valid
 //    event beside it must still land — a bad event cannot fail a good batch.

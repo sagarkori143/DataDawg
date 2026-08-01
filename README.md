@@ -88,7 +88,7 @@ statements.
 | `packages/config` | Environment parsed and validated once at boot, in per-service slices. |
 | `packages/sdk` | Instrumentation: the `Proxy` wrapper, the loader hook, the bounded transport, PII redaction. |
 | `packages/providers` | Thin adapters over each vendor SDK, normalised onto one interface and one error taxonomy. |
-| `packages/ingest-core` | Validate → enrich → persist. Framework-free, so one implementation serves two entry points. |
+| `packages/ingest-core` | Validate → enrich → deliver. Framework-free, so one implementation serves two entry points. Holds the `EventSink` interface. |
 | `packages/db` | Schema, migrations, repositories, metrics queries. |
 | `apps/web` | Chat UI, dashboards, and the deployed ingestion route. |
 | `apps/ingest` | Standalone Fastify ingestion service. |
@@ -127,9 +127,34 @@ Nearly every decision below follows from that split.
    immediately**.
 4. The queue flushes as a batch (50 events or 200 ms, whichever first).
 5. Ingestion authenticates, validates **per event**, re-scans for PII, prices the
-   call, and persists.
+   call, and hands the batch to an `EventSink`.
 6. A single SQL statement inserts and updates the per-minute rollup together.
 7. Dashboards read the rollup, never raw events.
+
+### The event sink
+
+`INGEST_SINK` picks where accepted events go. One interface, three implementations:
+
+| Sink | Behaviour | When |
+|---|---|---|
+| `direct` | `await`s the insert. Reports the true inserted/duplicate split. | Low volume. Simplest thing that works. |
+| **`pgmq`** | Enqueues and returns; an in-process worker persists. A database blip queues work instead of returning 503. | **Built.** Zero extra infrastructure — the queue lives inside Postgres. |
+| `kafka` | Throws. The interface is satisfied so the migration path is visible in code, with the thresholds beside it. | Past ~20–50k events/sec, 4+ independent real-time consumers, or partitioned ordering. |
+
+Switching is safe in either direction because the persist path is idempotent —
+at-least-once redelivery cannot double-count. Verified: replaying 50 events
+through `pgmq` produced `worker absorbed 50 duplicates` and **zero** duplicate
+rows in the table.
+
+**The queue is a buffer, not the log.** It carries events awaiting persistence
+and its only consumer is the worker. `inference_events` is the log — append-only,
+partitioned, immutable — and that is what any future consumer reads. Kafka merges
+those two roles; keeping them separate is why deleting a message after processing
+loses nothing.
+
+One honest consequence: with an async sink the endpoint cannot report duplicates,
+because the insert has not happened yet. That is precisely why it returns **202
+Accepted** rather than 200 OK.
 
 ### Three details worth pointing at
 

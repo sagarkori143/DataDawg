@@ -5,6 +5,7 @@ import {
   type InferenceEvent,
 } from '@ollive/contracts'
 import { events } from '@ollive/db'
+import { createSink, type EventSink, type SinkKind } from './sink.js'
 import { priceCall } from '@ollive/providers'
 import { preview } from '@ollive/sdk'
 
@@ -28,11 +29,17 @@ export interface IngestOptions {
   /** Re-scan previews for PII even though the SDK already did. Defence in depth. */
   redactionMode: 'sdk' | 'ingest' | 'both' | 'off'
   previewChars: number
+  /** Where accepted events go. Defaults to writing straight to Postgres. */
+  sink?: EventSink | SinkKind
 }
 
 export interface IngestOutcome extends IngestAck {
   /** Events parked in the DLQ rather than dropped. */
   deadLettered: number
+  /** Which sink took the events. */
+  sink: string
+  /** True when `accepted` means queued rather than persisted. */
+  deferred: boolean
 }
 
 /**
@@ -74,6 +81,8 @@ export async function handleBatch(
       duplicates: 0,
       rejected: 1,
       deadLettered: 1,
+      sink: 'none',
+      deferred: false,
       errors: [{ eventId: null, reason: 'invalid batch envelope' }],
     }
   }
@@ -125,19 +134,26 @@ export async function handleBatch(
     }
   }
 
+  const sink = typeof opts.sink === 'object' ? opts.sink : createSink(opts.sink ?? 'direct')
+
   if (priced.length === 0) {
-    return { accepted: 0, duplicates: 0, rejected: errors.length, deadLettered, errors }
+    return {
+      accepted: 0, duplicates: 0, rejected: errors.length, deadLettered,
+      sink: sink.name, deferred: false, errors,
+    }
   }
 
   // ── 3. Persist ───────────────────────────────────────────────────────────
   try {
-    const { inserted, duplicates } = await events.ingestBatch(priced)
+    const result = await sink.deliver(priced)
 
     return {
-      accepted: inserted,
-      duplicates,
+      accepted: result.accepted,
+      duplicates: result.duplicates,
       rejected: errors.length,
       deadLettered,
+      sink: sink.name,
+      deferred: result.deferred,
       errors,
     }
   } catch (err) {
@@ -145,7 +161,7 @@ export async function handleBatch(
     // dead-letter here — that would turn a five-second outage into thousands of
     // rows needing manual replay. Signal failure so the SDK retries with
     // backoff, which is exactly what its idempotency key exists for.
-    throw new Error(`persist failed: ${(err as Error).message}`, { cause: err })
+    throw new Error(`sink "${sink.name}" failed: ${(err as Error).message}`, { cause: err })
   }
 }
 
@@ -197,6 +213,8 @@ function enrich(event: InferenceEvent, sdkVersion: string, opts: IngestOptions) 
  * A naive `===` leaks key length and prefix through timing. The comparison is
  * cheap and the failure mode of getting it wrong is a silently guessable key.
  */
+export * from './sink.js'
+
 export function checkAuth(header: string | undefined, expected: string): boolean {
   if (!header) return false
 

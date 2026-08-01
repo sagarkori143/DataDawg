@@ -1,7 +1,8 @@
 import { ingestServerConfig, runtimeConfig, telemetryConfig } from '@ollive/config'
-import { closePool, events, ping } from '@ollive/db'
+import { closePool, events, ping, queue } from '@ollive/db'
 import { checkAuth, handleBatch } from '@ollive/ingest-core'
 import Fastify from 'fastify'
+import { QueueWorker } from './worker.js'
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -75,6 +76,7 @@ app.post('/v1/events', async (req, reply) => {
     const result = await handleBatch(req.body, {
       redactionMode: telemetry.redaction,
       previewChars: telemetry.previewChars,
+      sink: cfg.sink,
     })
 
     // 202, not 200. 200 claims the write is complete; 202 says "received, and
@@ -121,6 +123,9 @@ app.post('/v1/dlq/replay', async (req, reply) => {
       const out = await handleBatch(body, {
         redactionMode: telemetry.redaction,
         previewChars: telemetry.previewChars,
+        // Replay always writes directly: a message that already failed the
+        // queue path should not be put back on the queue.
+        sink: 'direct',
       })
       if (out.accepted > 0 || out.duplicates > 0) replayed.push(item.id)
     } catch {
@@ -131,6 +136,29 @@ app.post('/v1/dlq/replay', async (req, reply) => {
   await events.markDlqReplayed(replayed)
   return { attempted: items.length, replayed: replayed.length }
 })
+
+app.get('/v1/queue', async (req, reply) => {
+  if (!checkAuth(req.headers.authorization, cfg.apiKey)) {
+    return reply.code(401).send({ error: 'invalid or missing credentials' })
+  }
+  return { sink: cfg.sink, worker: worker ? worker.stats : null, queue: await queue.health() }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Worker
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Runs in-process by default: one fewer thing to deploy, and the workload is
+// I/O-bound so it does not compete for CPU. Set INGEST_WORKER=false to scale it
+// out separately — a deployment change, not a code change.
+const worker =
+  cfg.sink === 'pgmq' && cfg.runWorker
+    ? new QueueWorker((level, msg, extra) =>
+        level === 'error' ? app.log.error(extra, msg) : app.log.warn(extra, msg),
+      )
+    : null
+
+worker?.start()
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lifecycle
@@ -159,6 +187,9 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 
     void app
       .close()
+      // Stop the worker before the pool: it is mid-query, and closing the pool
+      // underneath it would fail the batch it is about to acknowledge.
+      .then(() => worker?.stop())
       .then(() => closePool())
       .then(() => process.exit(0))
       .catch(() => process.exit(1))

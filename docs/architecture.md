@@ -29,11 +29,25 @@ Ingestion flow, logging strategy, scaling, and failure-handling assumptions.
   │   1. authenticate      constant-time bearer compare           │
   │   2. validate          envelope, then EACH EVENT separately   │
   │   3. enrich            re-scan PII · price · stamp server ts  │
-  │   4. persist           one CTE: insert + rollup               │
+  │   4. deliver           EventSink: direct | pgmq | kafka       │
   │   → 202 Accepted                                              │
   └───────────────────────────────┬──────────────────────────────┘
-                                  ▼
-                    Postgres ──► dashboards (read rollups)
+                                  │
+              ┌───────────────────┴───────────────────┐
+              │ direct                          pgmq  │
+              ▼                                       ▼
+      insert + rollup (one CTE)            pgmq queue ──► worker
+              │                                              │
+              └──────────────────┬───────────────────────────┘
+                                 ▼
+                   inference_events  ← THE LOG
+                                 │
+                                 ▼
+                   dashboards (read rollups) · future consumers
+
+  The queue is a BUFFER; the table is the LOG. A future service reads the
+  table (or takes a logical replication slot), never the queue — so the
+  worker deleting a message costs nothing.
 ```
 
 ### 1.1 Why the assistant row is created before the stream starts
@@ -134,7 +148,7 @@ never emits an event.
 |---|---|---|
 | ~1k events/day | none | — |
 | ~1M/day | dashboards slow if they read raw | already fixed: they read rollups |
-| ~10M/day | `inference_events` writes dominate | add the event bus; batch inserts across requests |
+| ~10M/day | `inference_events` writes dominate | `INGEST_SINK=pgmq` (built); scale the worker out with `INGEST_WORKER=false` |
 | ~50M/day | Postgres partition maintenance becomes a chore | **move `inference_events` to ClickHouse** |
 | any | one process cannot flush fast enough | horizontal — the SDK is per-process, the endpoint is stateless |
 
