@@ -19,13 +19,14 @@
     "typecheck": "tsc -b --dry",
     "db:migrate": "npm run migrate --workspace @ollive/db",
     "db:reset": "npm run reset --workspace @ollive/db",
-    "dev": "npm run build && concurrently -n web,ingest -c cyan,magenta \"npm:dev:web\" \"npm:dev:ingest\"",
+    "dev": "npm run build && concurrently -n web,ingest,dash -c cyan,magenta,green \"npm:dev:web\" \"npm:dev:ingest\" \"npm:dev:dashboard\"",
     "dev:web": "npm run dev --workspace @ollive/web",
     "dev:ingest": "npm run dev --workspace @ollive/ingest",
     "test": "npm run test --workspaces --if-present",
     "db:verify": "npm run verify --workspace @ollive/db",
     "load": "node examples/load/generate.mjs",
-    "zero-code": "node --import @ollive/sdk/register examples/zero-code/app.mjs"
+    "zero-code": "node --import @ollive/sdk/register examples/zero-code/app.mjs",
+    "dev:dashboard": "npm run dev --workspace @ollive/dashboard"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

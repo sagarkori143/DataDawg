@@ -97,7 +97,22 @@ export function Dashboard() {
   const load = useCallback(async () => {
     try {
       const qs = new URLSearchParams({ range, ...(model ? { model } : {}) })
-      const res = await fetch(`/api/metrics?${qs}`)
+      // When DASHBOARD_TOKEN is set the API requires a bearer token. Kept in
+      // localStorage rather than a cookie because there is no session here —
+      // it is a shared secret for a read-only view, not an identity.
+      const token = typeof window !== 'undefined' ? localStorage.getItem('ollive.token') : null
+      const res = await fetch(`/api/metrics?${qs}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+
+      if (res.status === 401) {
+        const entered = typeof window !== 'undefined' ? window.prompt('Dashboard token:') : null
+        if (entered) {
+          localStorage.setItem('ollive.token', entered)
+          return load()
+        }
+        throw new Error('unauthorized — set DASHBOARD_TOKEN or clear it to run open')
+      }
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? 'failed to load metrics')
       setData(json)

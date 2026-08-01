@@ -1,4 +1,5 @@
 import { RANGE_KEYS, metrics, type Range } from '@ollive/db'
+import { checkDashboardAuth } from '@/lib/auth'
 
 /**
  * GET /api/metrics?range=1h&model=…
@@ -13,6 +14,10 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function GET(req: Request): Promise<Response> {
+  if (!checkDashboardAuth(req.headers.get('authorization'))) {
+    return Response.json({ error: 'unauthorized' }, { status: 401 })
+  }
+
   const url = new URL(req.url)
   const raw = url.searchParams.get('range') ?? '1h'
   const range: Range = (RANGE_KEYS as string[]).includes(raw) ? (raw as Range) : '1h'

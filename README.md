@@ -9,12 +9,17 @@ pipeline that ingests those events without ever blocking the app, and a schema
 that answers questions about them cheaply.
 
 ```
-  browser ──► chat server ──► Anthropic / OpenAI
-                   │
-                   │ (out of band, non-blocking)
-                   ▼
-            ingestion service ──► Postgres ──► dashboards
+  browser ──► chat :3000 ──► Anthropic / OpenAI
+                  │
+                  │ (out of band, non-blocking)
+                  ▼
+            ingest :3001 ──► Postgres ◄── dashboard :3002
+                                            (own host, own pool,
+                                             can point at a replica)
 ```
+
+Three services. The dashboard shares no runtime with the chat app — kill it and
+chat is untouched, which is verified rather than asserted.
 
 ---
 
@@ -50,11 +55,11 @@ cp .env.example .env        # fill in DATABASE_URL and ANTHROPIC_API_KEY
 npm run build
 npm run db:migrate
 npm run db:verify           # asserts the schema landed as designed
-npm run dev                 # chat on :3000, ingestion on :3001
+npm run dev                 # chat :3000, ingest :3001, dashboard :3002
 ```
 
-Then open **http://localhost:3000** to chat and
-**http://localhost:3000/dashboard** for the charts.
+Then open **http://localhost:3000** to chat and **http://localhost:3002** for
+the charts.
 
 To give the dashboards shape without spending money on real calls:
 
@@ -102,8 +107,9 @@ advisory lock. See the connection-limit section in
 | `packages/providers` | Thin adapters over each vendor SDK, normalised onto one interface and one error taxonomy. |
 | `packages/ingest-core` | Validate → enrich → deliver. Framework-free, so one implementation serves two entry points. Holds the `EventSink` interface. |
 | `packages/db` | Schema, migrations, repositories, metrics queries. |
-| `apps/web` | Chat UI, dashboards, and the deployed ingestion route. |
-| `apps/ingest` | Standalone Fastify ingestion service. |
+| `apps/web` | Chat UI and the deployed ingestion route. |
+| `apps/ingest` | Standalone Fastify ingestion service + queue worker. |
+| `apps/dashboard` | The observability UI. **Separate deployable, own database connection.** |
 | `examples/zero-code` | The proof. |
 | `examples/load` | Traffic generator and pipeline assertions. |
 

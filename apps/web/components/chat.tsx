@@ -227,9 +227,14 @@ export function Chat() {
       <header className="flex items-center justify-between border-b border-[--color-edge] px-6 py-3">
         <div className="flex items-baseline gap-3">
           <span className="text-sm font-semibold tracking-tight">Ollive</span>
-          <a href="/dashboard" className="text-xs text-[--color-muted] underline-offset-2 hover:underline">
-            dashboards →
-          </a>
+          {process.env.NEXT_PUBLIC_DASHBOARD_URL && (
+            <a
+              href={process.env.NEXT_PUBLIC_DASHBOARD_URL}
+              className="text-xs text-[--color-muted] underline-offset-2 hover:underline"
+            >
+              dashboards →
+            </a>
+          )}
         </div>
         <div className="flex items-center gap-3">
           {providers.length > 0 && (

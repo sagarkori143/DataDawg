@@ -1,0 +1,36 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-ink: #0f1115;
+  --color-panel: #16191f;
+  --color-edge: #262b34;
+  --color-muted: #8b93a1;
+  --color-accent: #7dd3a0;
+  --color-danger: #f0776c;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--color-ink);
+  color: #e8eaed;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The cursor that trails a streaming response — the visual cue that tokens are
+   still arriving. Removed the moment the stream ends. */
+@keyframes blink {
+  0%, 45% { opacity: 1; }
+  55%, 100% { opacity: 0; }
+}
+
+.caret::after {
+  content: '▍';
+  margin-left: 1px;
+  animation: blink 1s steps(1) infinite;
+  color: var(--color-accent);
+}

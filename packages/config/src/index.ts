@@ -333,6 +333,31 @@ export const ingestServerConfig = slice(
     })),
 )
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Dashboard
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const dashboardConfig = slice(
+  'dashboard',
+  z
+    .object({
+      DASHBOARD_PORT: z.coerce.number().int().positive().max(65_535).default(3002),
+      /**
+       * Shared bearer token for the metrics API.
+       *
+       * Unset means open. That is fine locally and deliberate — but the
+       * dashboard exposes spend per model and raw provider error messages, so
+       * once it runs on its own host this should be set, or the host put
+       * behind a VPN or identity provider.
+       */
+      DASHBOARD_TOKEN: z.string().min(8).optional(),
+    })
+    .transform((e) => ({
+      port: e.DASHBOARD_PORT,
+      token: e.DASHBOARD_TOKEN ?? null,
+    })),
+)
+
 /** Test-only: drop every memoised slice so a test can vary the environment. */
 export function __resetConfigForTests(): void {
   dotenvLoaded = true // tests set process.env directly; never let dotenv overwrite them
