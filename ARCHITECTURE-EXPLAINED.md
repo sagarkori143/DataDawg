@@ -26,7 +26,7 @@ every design tradeoff visible, and a 3–4 minute demo video.
 | Decision | Choice |
 |---|---|
 | **Timeline** | **2 days (~20 working hours)** |
-| **Hosting** | **Managed for now** — Vercel + Neon Postgres. **Containers deferred, not designed out.** |
+| **Hosting** | **Managed for now** — Vercel + Postgres. Containers were deferred, then built: images and `docker compose up` are verified on every push. Only k8s is outstanding. |
 | **Providers** | **Anthropic + OpenAI.** Real multi-provider, and the OpenAI adapter covers the whole compatible family. |
 | **Auto-instrumentation** | **The `--import` loader hook is CORE, not a stretch goal.** |
 
@@ -59,6 +59,13 @@ Same file. Zero lines of logging code in it. That diff **is** the deliverable.
 
 ### Containers: strings left open
 
+> **Update — Docker shipped.** This section was written as a plan. Docker and Compose are now
+> built and verified on every push; only k8s is still on paper. What follows is the reasoning
+> that was recorded in advance, kept because the prediction it makes is the interesting part:
+> *containerising this would be packaging, not rework.* That turned out to be true — the
+> application code needed **zero** changes. The whole cost was three Dockerfiles, a
+> `compose.yaml`, and one CI job. See the end of this section for what it actually took.
+
 Docker and k8s are **deferred to a possible Day 3**, not designed out. The code is written
 container-ready from commit one, so adding them later is packaging rather than rework:
 
@@ -90,6 +97,35 @@ in `docs/` is honest; committed-and-implied-working is not.
 > container runtime, and I would rather label that than imply otherwise.*
 
 That paragraph turns a gap into evidence of judgement — which is what the brief is grading.
+
+### What it actually took
+
+The prediction held. **No application code changed** — the seams above were the whole job.
+
+| Predicted | Actual |
+|---|---|
+| "packaging rather than rework" | ✅ Zero application-code changes |
+| `/healthz` + `/readyz` distinct | ✅ CI asserts **200 vs 503** with no database — if both answered 200 the split would be decorative |
+| SIGTERM drains | ✅ `docker stop` exits cleanly, which is what proves `CMD ["node", …]` rather than `npm start` (npm is PID 1 and does not forward signals) |
+| `db:migrate` becomes the compose one-shot | ✅ Verbatim, gated by `service_completed_successfully` |
+| "~1 h" | Closer to 4, almost all of it in CI rather than in the Dockerfiles |
+
+**The two things the plan did not anticipate:**
+
+1. **`pgmq` is not in `postgres:17-alpine`.** The migration would have failed hard, so 005 was
+   made tolerant — it warns and degrades to direct writes rather than aborting. That is correct
+   behaviour for a managed database that cannot install extensions, but it introduced a new
+   failure mode: the stack can come up *looking* green while never exercising the event bus. So
+   CI now asserts `pgmq=true` explicitly, and compose uses an image that has it.
+2. **The env var had to be set at the job level, not the step level.** Every `docker compose`
+   invocation re-parses `compose.yaml`, and `${ANTHROPIC_API_KEY:?...}` is a *required*
+   variable — so setting it only on the `up` step made `up` succeed and every later command
+   fail during interpolation. It read like a broken stack rather than a missing variable, which
+   is the expensive kind of error.
+
+**Verification is on the runner, not this machine.** The build machine still has no container
+runtime. That is arguably better than having installed one: the Dockerfiles are exercised from
+a clean checkout on every commit, rather than working on one laptop.
 
 ---
 
@@ -1022,8 +1058,13 @@ cron; rollups 400 days (they are tiny); DLQ 30 days. *"We'd add retention" is no
 
 # PART 5 — The bonus items
 
-**8 of 10 bonus items are in scope**, and the two container items are *deferred with the seams
-kept open*, not designed out.
+> **Update — 9 of 10 shipped.** This was written as a forecast of 8. The event bus and Docker
+> Compose both landed; only k8s did not. The table below has been updated to the outcome, with
+> the original forecast kept in the last column where it differed — the places the plan was
+> wrong are more informative than the places it was right.
+
+**9 of 10 bonus items are built.** Only k8s is outstanding, because there is no cluster to
+verify manifests against.
 
 Note that **auto-instrumentation is not on this list** — it sits in the main body of the brief,
 not the bonus section. It is a core requirement that most candidates under-deliver, which is
@@ -1038,14 +1079,20 @@ exactly why the loader hook is worth the hours.
 | **Multi-provider** | ✅ **in** | Two hand-rolled adapters: `AnthropicAdapter` + `OpenAICompatibleAdapter`. The second is base-URL-driven, so DeepSeek / Groq / xAI / Together / Ollama are **config entries, not code** — ship the map even though only OpenAI is keyed, and say so. |
 | **Dashboards** | ✅ **in** | In-app (Recharts) over the rollup tables: latency p50/p95/p99, throughput req/min + tokens/sec, error rate by type, cost by model. Raw-vs-rollup toggle to demonstrate both query paths. |
 | **PII redaction** | ✅ **in** | Defense in depth — redact in the **SDK before transmit** (PII never leaves the process) **and re-scan at ingestion** (central policy). Detectors: email, phone, SSN, credit card **with Luhn check**, IP, JWT/bearer/API keys. **Hash rather than drop** (`sha256` prefix) so you can still count distinct without storing the value. Presidio/LLM classifiers are the heavyweight option — overkill here, name them anyway. |
-| **Event-based** | 🔶 **stretch** | `EventBus` interface is built in Phase 2 regardless. The Postgres `SKIP LOCKED` + `LISTEN/NOTIFY` implementation needs **no extra infrastructure**, so it survives the no-Docker constraint — it just needs the hours. |
-| **Docker Compose** | 🔓 **deferred, seams open** | Code is container-ready from commit one (env config, no local state, `/healthz` + `/readyz`, SIGTERM flush, stdout JSON logs). `docs/containerization.md` carries the real Dockerfiles and compose topology, **labelled unverified**. Slots in as a Day-3 phase if the hours appear. |
-| **k8s** | 🔓 **deferred, seams open** | Same seams — the probes and graceful shutdown *are* the k8s contract. Manifests sketched in `docs/`, **not committed as if working**. |
+| **Event-based** | ✅ **built** | **`pgmq`, not `SKIP LOCKED`.** The forecast was a hand-rolled queue; pgmq turned out to be available and gives SQS semantics — visibility timeouts, long polling via `read_with_poll`, archive-on-delete — for none of the code. Behind an `EventSink` interface: `DirectSink`, `PgmqSink`, and a `KafkaSink` that **throws by design** with the threshold that would justify it written in the file. Resolved at boot, so a database without the extension degrades to direct writes with a warning rather than failing. |
+| **Docker Compose** | ✅ **built** | `docker compose up` from a clean checkout. **Verified on every push** — not on this machine, which still has no container runtime, but on a GitHub Actions runner, which is the stronger claim. The job asserts the stack boots, the schema verifies *inside the image*, `pgmq=true`, all three services answer, and an event survives HTTP → queue → worker → Postgres. |
+| **k8s** | ❌ **not built** | The only one outstanding. The probes and graceful shutdown *are* the k8s contract, so the manifests in `docs/containerization.md` should apply cleanly — but "should" is the problem. There is no cluster to check against, so they stay a design document rather than an applyable `k8s/` directory. |
 
-**Why "deferred" and not "shipped anyway":** an unverifiable claim is worse than a stated gap.
-A reviewer who runs `docker compose up`, hits an error, and realises the manifests were never
-executed now doubts everything else in the repo. Written-and-labelled is honest;
-committed-and-implied-working is not.
+**Why k8s stays unshipped:** an unverifiable claim is worse than a stated gap. A reviewer who
+runs `kubectl apply`, hits an error, and realises the manifests were never executed now doubts
+everything else in the repo. This is the same reasoning that kept `compose.yaml` out of the
+repo until CI could run it — the difference is that Docker found a way to be verified and k8s
+has not yet.
+
+**The lesson from doing it anyway:** "deferred with the seams open" was the right call at
+planning time *and* the seams held. But the phrase is only worth anything if you eventually go
+back and prove it. Two of the three deferred items are now proven; the third is still a
+promise, and is labelled as one.
 
 **Multi-provider rejected alternative:** the Vercel AI SDK would save real time and has a built-in
 `experimental_telemetry` hook — but wrapping someone else's wrapper weakens the
