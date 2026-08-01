@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Markdown } from './markdown'
 import { ModelPicker } from './model-picker'
 import { Sidebar } from './sidebar'
 
@@ -236,10 +237,20 @@ export function Chat() {
     setSidebarOpen(false)
   }, [])
 
-  /** The last assistant row is still empty — the request is out, no token yet. */
+  /**
+   * Nothing has come back yet.
+   *
+   * Two states qualify, and missing the first one is what made the indicator
+   * arrive late: between pressing Enter and the server's `meta` frame there is
+   * no assistant row at all, only the user's message. That gap is a network
+   * round trip — the most likely moment for the user to wonder whether the
+   * send worked — so it is exactly when the indicator must already be visible.
+   */
   const last = messages[messages.length - 1]
   const awaitingFirstToken =
-    streaming && last?.role === 'assistant' && last.content.length === 0 && !last.error
+    streaming &&
+    (last?.role === 'user' ||
+      (last?.role === 'assistant' && last.content.length === 0 && !last.error))
 
   return (
     <div className="flex h-full">
@@ -327,10 +338,10 @@ export function Chat() {
                        message in a container — which is what makes long replies
                        readable instead of a wall inside a box. */
                     <div key={m.id} className="msg-in flex flex-col gap-2">
-                      <div className="whitespace-pre-wrap text-[15px] leading-[1.75] text-text">
-                        {m.content}
+                      <div className="text-[15px] leading-[1.75] text-text">
+                        <Markdown>{m.content}</Markdown>
                         {streaming && !m.error && m.content.length > 0 && (
-                          <span className="caret" aria-hidden />
+                          <span className="caret -mt-1 inline-block" aria-hidden />
                         )}
                       </div>
 
