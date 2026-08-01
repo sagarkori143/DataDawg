@@ -65,57 +65,107 @@ export function Sidebar({
     [load],
   )
 
+  const groups = groupByAge(rows)
+
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-[#262b34]">
-      <div className="border-b border-[#262b34] p-3">
+    <aside className="flex h-full w-67 shrink-0 flex-col border-r border-line bg-surface">
+      <div className="p-3">
         <button
           onClick={onNew}
-          className="w-full rounded-lg border border-[#262b34] px-3 py-2 text-xs text-[#c3c2b7] hover:border-[#7dd3a0]/40 hover:text-[#7dd3a0]"
+          className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-[13px] font-medium text-text transition-colors hover:bg-raised"
         >
-          + new conversation
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden className="text-clay">
+            <path d="M8 3.5v9M3.5 8h9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+          </svg>
+          New chat
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto px-2 pb-3">
         {rows.length === 0 && (
-          <p className="px-3 py-6 text-center text-[11px] text-[#898781]">No conversations yet.</p>
+          <p className="px-3 py-8 text-center text-xs leading-relaxed text-faint">
+            No conversations yet.
+          </p>
         )}
 
-        {rows.map((c) => (
-          <button
-            key={c.id}
-            onClick={() => onSelect(c.id)}
-            className={`group flex w-full flex-col gap-0.5 border-b border-[#1b1f26] px-3 py-2.5 text-left hover:bg-[#16191f] ${
-              activeId === c.id ? 'bg-[#16191f]' : ''
-            }`}
-          >
-            <div className="flex items-start justify-between gap-2">
-              <span className="line-clamp-2 text-xs leading-snug text-[#e8eaed]">
-                {c.title ?? 'Untitled'}
-              </span>
-              <span
-                onClick={(e) => void archive(c.id, e)}
-                role="button"
-                tabIndex={0}
-                aria-label="Archive conversation"
-                className="shrink-0 text-[11px] text-[#898781] opacity-0 transition group-hover:opacity-100 hover:text-[#f0776c]"
-              >
-                {busy === c.id ? '…' : '×'}
-              </span>
+        {groups.map(([heading, items]) => (
+          <div key={heading} className="mb-3">
+            <div className="px-3 pb-1.5 pt-2 text-[10px] font-medium uppercase tracking-[0.12em] text-faint">
+              {heading}
             </div>
-            <span className="text-[10px] tabular-nums text-[#898781]">
-              {c.messageCount} msg
-              {c.lastMessageAt &&
-                ` · ${new Date(c.lastMessageAt).toLocaleString([], {
-                  month: 'short',
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}`}
-            </span>
-          </button>
+
+            {items.map((c) => (
+              <div
+                key={c.id}
+                className={`group relative flex items-center rounded-xl transition-colors ${
+                  activeId === c.id ? 'bg-raised' : 'hover:bg-raised/60'
+                }`}
+              >
+                <button
+                  onClick={() => onSelect(c.id)}
+                  className="min-w-0 flex-1 px-3 py-2 text-left"
+                >
+                  <span className="block truncate text-[13px] leading-snug text-text">
+                    {c.title ?? 'Untitled'}
+                  </span>
+                  <span className="mt-0.5 block text-[11px] tabular-nums text-faint">
+                    {c.messageCount} msg
+                    {c.lastMessageAt &&
+                      ` · ${new Date(c.lastMessageAt).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}`}
+                  </span>
+                </button>
+
+                {/* A real button, not a click handler on a span — archive must
+                    be reachable by keyboard, and focus alone reveals it. */}
+                <button
+                  onClick={(e) => void archive(c.id, e)}
+                  aria-label={`Archive ${c.title ?? 'conversation'}`}
+                  className="mr-1.5 shrink-0 rounded-lg p-1.5 text-faint opacity-0 transition hover:bg-canvas hover:text-danger focus-visible:opacity-100 group-hover:opacity-100"
+                >
+                  {busy === c.id ? (
+                    <span className="block h-3 w-3 animate-pulse rounded-full bg-current" />
+                  ) : (
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>
+                      <path
+                        d="M2.5 2.5l7 7M9.5 2.5l-7 7"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                  )}
+                </button>
+              </div>
+            ))}
+          </div>
         ))}
       </div>
     </aside>
   )
+}
+
+/**
+ * Group by recency.
+ *
+ * A flat list of fifty identical rows is hard to scan; "Today / Yesterday /
+ * Earlier" gives the eye somewhere to land. Rows arrive already sorted by
+ * `last_message_at DESC`, so this only has to partition — no re-sorting, and
+ * the index does the ordering work.
+ */
+function groupByAge(rows: ConversationRow[]): Array<[string, ConversationRow[]]> {
+  const now = Date.now()
+  const DAY = 86_400_000
+  const buckets: Record<string, ConversationRow[]> = { Today: [], Yesterday: [], Earlier: [] }
+
+  for (const r of rows) {
+    const at = r.lastMessageAt ?? r.createdAt
+    const age = now - new Date(at).getTime()
+    const key = age < DAY ? 'Today' : age < 2 * DAY ? 'Yesterday' : 'Earlier'
+    buckets[key]!.push(r)
+  }
+
+  return Object.entries(buckets).filter(([, v]) => v.length > 0)
 }

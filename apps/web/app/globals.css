@@ -1,12 +1,31 @@
 @import 'tailwindcss';
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   DataDawg — chat theme
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Warm dark, not cool dark. Every grey here carries a little red and yellow
+   (#1c1b19 rather than #0f1115), which is what separates a room from a
+   terminal. The dashboard next door is deliberately cool and near-black: it
+   is an instrument panel and should read like one. This is a place to read.
+
+   The accent is clay, and it appears on exactly three things — the send
+   control, the streaming caret, and focus. So it always means "the system is
+   doing something", never decoration.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
 @theme {
-  --color-ink: #0f1115;
-  --color-panel: #16191f;
-  --color-edge: #262b34;
-  --color-muted: #8b93a1;
-  --color-accent: #7dd3a0;
-  --color-danger: #f0776c;
+  --color-canvas: #1c1b19;
+  --color-surface: #232220;
+  --color-raised: #2c2a27;
+  --color-line: #383530;
+
+  --color-text: #f2efe9;
+  --color-muted: #a8a29a;
+  --color-faint: #78726a;
+
+  --color-clay: #d97757;
+  --color-danger: #e5675a;
 }
 
 html,
@@ -15,22 +34,85 @@ body {
 }
 
 body {
-  background: var(--color-ink);
-  color: #e8eaed;
-  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background: var(--color-canvas);
+  color: var(--color-text);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* The cursor that trails a streaming response — the visual cue that tokens are
-   still arriving. Removed the moment the stream ends. */
-@keyframes blink {
+/* ── Streaming caret ──────────────────────────────────────────────────────
+   Trails the last token, so "still arriving" is visible without a spinner.
+   Removed the instant the stream ends — a caret that outlives the stream is
+   worse than none, because it says the model is still thinking. */
+@keyframes caret-blink {
   0%, 45% { opacity: 1; }
   55%, 100% { opacity: 0; }
 }
 
 .caret::after {
-  content: '▍';
-  margin-left: 1px;
-  animation: blink 1s steps(1) infinite;
-  color: var(--color-accent);
+  content: '';
+  display: inline-block;
+  width: 0.5ch;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  background: var(--color-clay);
+  animation: caret-blink 1.05s steps(1) infinite;
+}
+
+/* ── Message entrance ─────────────────────────────────────────────────────
+   Short and small. A long entrance on a chat message delays reading it. */
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.msg-in {
+  animation: msg-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Three dots before the first token lands. The gap between pressing Enter and
+   the first byte is the longest silence in the app — TTFT is the number the
+   dashboard tracks, and this is what it feels like from the other side. */
+@keyframes dot-pulse {
+  0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-2px); }
+}
+.dot {
+  animation: dot-pulse 1.3s ease-in-out infinite;
+}
+.dot:nth-child(2) { animation-delay: 0.16s; }
+.dot:nth-child(3) { animation-delay: 0.32s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-in,
+  .dot,
+  .caret::after {
+    animation: none;
+  }
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3a3733 transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #37342f;
+  border-radius: 9999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #46423b;
+  background-clip: content-box;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-clay);
+  outline-offset: 2px;
+  border-radius: 6px;
 }

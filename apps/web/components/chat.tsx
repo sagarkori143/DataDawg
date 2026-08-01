@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Sidebar } from './sidebar'
 
 interface Msg {
@@ -27,6 +27,7 @@ export function Chat() {
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [meta, setMeta] = useState<Meta | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [providers, setProviders] = useState<
     { name: string; models: string[]; defaultModel: string }[]
   >([])
@@ -58,10 +59,25 @@ export function Chat() {
    */
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const taRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  /**
+   * Grow the composer with its content, up to a ceiling.
+   *
+   * Layout effect, not effect: measuring after paint makes the box visibly
+   * jump a frame behind the text. Height is reset to `auto` first because
+   * scrollHeight never shrinks below the current height.
+   */
+  useLayoutEffect(() => {
+    const el = taRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 240)}px`
+  }, [input])
 
   const stop = useCallback(() => {
     abortRef.current?.abort()
@@ -194,13 +210,16 @@ export function Chat() {
 
       setConversationId(id)
       setMessages(
-        json.messages.map((m: { id: string; role: string; content: string; isComplete: boolean }) => ({
-          id: m.id,
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
-          partial: !m.isComplete,
-        })),
+        json.messages.map(
+          (m: { id: string; role: string; content: string; isComplete: boolean }) => ({
+            id: m.id,
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+            partial: !m.isComplete,
+          }),
+        ),
       )
+      setSidebarOpen(false)
     } catch {
       /* leave the current view alone rather than blanking it on a failed load */
     }
@@ -213,140 +232,237 @@ export function Chat() {
     setConversationId(null)
     setMessages([])
     setMeta(null)
+    setSidebarOpen(false)
   }, [])
+
+  /** The last assistant row is still empty — the request is out, no token yet. */
+  const last = messages[messages.length - 1]
+  const awaitingFirstToken =
+    streaming && last?.role === 'assistant' && last.content.length === 0 && !last.error
 
   return (
     <div className="flex h-full">
-      <Sidebar
-        activeId={conversationId}
-        onSelect={(id) => void resume(id)}
-        onNew={newConversation}
-        refreshKey={refreshKey}
-      />
+      {/* Off-canvas below lg, fixed rail above it. */}
+      <div
+        className={`fixed inset-y-0 left-0 z-40 transition-transform lg:static lg:translate-x-0 ${
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        <Sidebar
+          activeId={conversationId}
+          onSelect={(id) => void resume(id)}
+          onNew={newConversation}
+          refreshKey={refreshKey}
+        />
+      </div>
+
+      {sidebarOpen && (
+        <button
+          aria-label="Close conversation list"
+          onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 z-30 bg-black/50 lg:hidden"
+        />
+      )}
+
       <div className="flex min-w-0 flex-1 flex-col">
-      <header className="flex items-center justify-between border-b border-[--color-edge] px-6 py-3">
-        <div className="flex items-baseline gap-3">
-          <span className="text-sm font-semibold tracking-tight">
-            Data<span className="text-[--color-accent]">Dawg</span>
-          </span>
-          {process.env.NEXT_PUBLIC_DASHBOARD_URL && (
-            <a
-              href={process.env.NEXT_PUBLIC_DASHBOARD_URL}
-              className="text-xs text-[--color-muted] underline-offset-2 hover:underline"
+        {/* ── Header ──────────────────────────────────────────────────── */}
+        <header className="flex shrink-0 items-center justify-between gap-3 px-4 py-3 sm:px-6">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open conversation list"
+              className="-ml-1 rounded-lg p-1.5 text-muted hover:bg-surface hover:text-text lg:hidden"
             >
-              dashboards →
-            </a>
-          )}
-        </div>
-        <div className="flex items-center gap-3">
-          {providers.length > 0 && (
-            <select
-              value={choice ? `${choice.provider}:${choice.model}` : ''}
-              onChange={(e) => {
-                const [provider, model] = e.target.value.split(':')
-                if (provider && model) setChoice({ provider, model })
-              }}
-              disabled={streaming}
-              className="rounded-md border border-[--color-edge] bg-[--color-panel] px-2 py-1 font-mono text-[11px] text-[--color-muted] outline-none disabled:opacity-40"
-            >
-              {providers.flatMap((p) =>
-                p.models.map((m) => (
-                  <option key={`${p.name}:${m}`} value={`${p.name}:${m}`}>
-                    {p.name} / {m}
-                  </option>
-                )),
-              )}
-            </select>
-          )}
-        {meta && (
-          <div className="flex items-center gap-3 font-mono text-[11px] text-[--color-muted]">
-            {meta.droppedTurns > 0 && (
-              <span title="Older turns evicted to stay within the context budget">
-                · {meta.droppedTurns} turn{meta.droppedTurns === 1 ? '' : 's'} dropped
-              </span>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+                <path
+                  d="M2 4h12M2 8h12M2 12h12"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+
+            <span className="text-[15px] font-semibold tracking-tight">
+              Data<span className="text-clay">Dawg</span>
+            </span>
+
+            {process.env.NEXT_PUBLIC_DASHBOARD_URL && (
+              <a
+                href={process.env.NEXT_PUBLIC_DASHBOARD_URL}
+                className="hidden rounded-lg px-2 py-1 text-xs text-faint transition-colors hover:text-text sm:inline"
+              >
+                dashboard →
+              </a>
             )}
           </div>
-        )}
-        </div>
-      </header>
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-3xl flex-col gap-5 px-6 py-8">
-          {messages.length === 0 && (
-            <div className="mt-24 text-center text-sm text-[--color-muted]">
-              Send a message. Every call is timed, measured, and shipped to the
-              ingestion pipeline out of band.
-            </div>
+          {meta && meta.droppedTurns > 0 && (
+            <span
+              title="Older turns evicted to stay within the context budget"
+              className="rounded-full border border-line px-2.5 py-1 text-[11px] text-faint"
+            >
+              {meta.droppedTurns} turn{meta.droppedTurns === 1 ? '' : 's'} dropped
+            </span>
           )}
+        </header>
 
-          {messages.map((m) => (
-            <div key={m.id} className="flex flex-col gap-1.5">
-              <span className="font-mono text-[11px] uppercase tracking-wider text-[--color-muted]">
-                {m.role}
-              </span>
-              <div
-                className={
-                  m.role === 'user'
-                    ? 'whitespace-pre-wrap rounded-lg bg-[--color-panel] px-4 py-3 text-sm leading-relaxed'
-                    : 'whitespace-pre-wrap px-1 text-sm leading-relaxed'
-                }
-              >
-                {m.content}
-                {streaming && m.role === 'assistant' && !m.error && (
-                  <span className="caret" aria-hidden />
+        {/* ── Transcript ──────────────────────────────────────────────── */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-3xl px-4 pb-10 sm:px-6">
+            {messages.length === 0 ? (
+              <Welcome />
+            ) : (
+              <div className="flex flex-col gap-7 pt-6">
+                {messages.map((m) =>
+                  m.role === 'user' ? (
+                    <div key={m.id} className="msg-in flex justify-end">
+                      <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-raised px-4 py-2.5 text-[15px] leading-relaxed">
+                        {m.content}
+                      </div>
+                    </div>
+                  ) : (
+                    /* No bubble on the assistant. The answer is the page, not a
+                       message in a container — which is what makes long replies
+                       readable instead of a wall inside a box. */
+                    <div key={m.id} className="msg-in flex flex-col gap-2">
+                      <div className="whitespace-pre-wrap text-[15px] leading-[1.75] text-text">
+                        {m.content}
+                        {streaming && !m.error && m.content.length > 0 && (
+                          <span className="caret" aria-hidden />
+                        )}
+                      </div>
+
+                      {m.error && (
+                        <div className="rounded-xl border border-danger/25 bg-danger/5 px-3.5 py-2.5 text-[13px] text-danger">
+                          {m.error}
+                        </div>
+                      )}
+                      {m.partial && !m.error && m.content.length > 0 && (
+                        <span className="text-xs text-faint">stopped — partial response saved</span>
+                      )}
+                    </div>
+                  ),
+                )}
+
+                {awaitingFirstToken && (
+                  <div className="flex items-center gap-1.5 pl-0.5" aria-label="Waiting for response">
+                    {[0, 1, 2].map((i) => (
+                      <span key={i} className="dot h-1.5 w-1.5 rounded-full bg-clay" />
+                    ))}
+                  </div>
                 )}
               </div>
+            )}
+            <div ref={bottomRef} />
+          </div>
+        </div>
 
-              {m.error && (
-                <div className="rounded border border-[--color-danger]/30 bg-[--color-danger]/5 px-3 py-2 text-xs text-[--color-danger]">
-                  {m.error}
-                </div>
-              )}
-              {m.partial && !m.error && m.content.length > 0 && (
-                <span className="text-[11px] text-[--color-muted]">
-                  stopped — partial response saved
+        {/* ── Composer ────────────────────────────────────────────────── */}
+        <div className="shrink-0 px-4 pb-4 sm:px-6 sm:pb-6">
+          <div className="mx-auto w-full max-w-3xl">
+            <div className="rounded-2xl border border-line bg-surface shadow-[0_8px_28px_-16px_rgba(0,0,0,0.8)] transition-colors focus-within:border-clay/45">
+              <textarea
+                ref={taRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    void send()
+                  }
+                }}
+                rows={1}
+                placeholder="Ask anything…"
+                className="max-h-60 w-full resize-none bg-transparent px-4 pt-3.5 text-[15px] leading-relaxed outline-none placeholder:text-faint"
+              />
+
+              {/* Controls sit inside the box, below the text — so the model in
+                  use is visible at the moment of sending rather than parked in
+                  a header nobody looks at. */}
+              <div className="flex items-center gap-2 px-3 pb-2.5 pt-1">
+                {providers.length > 0 && (
+                  <select
+                    value={choice ? `${choice.provider}:${choice.model}` : ''}
+                    onChange={(e) => {
+                      const [provider, model] = e.target.value.split(':')
+                      if (provider && model) setChoice({ provider, model })
+                    }}
+                    disabled={streaming}
+                    aria-label="Model"
+                    className="cursor-pointer rounded-lg bg-transparent px-1.5 py-1 text-xs text-faint outline-none transition-colors hover:text-muted disabled:opacity-40"
+                  >
+                    {providers.flatMap((p) =>
+                      p.models.map((m) => (
+                        <option key={`${p.name}:${m}`} value={`${p.name}:${m}`} className="bg-raised">
+                          {p.name} / {m}
+                        </option>
+                      )),
+                    )}
+                  </select>
+                )}
+
+                <span className="ml-auto hidden text-[11px] text-faint sm:inline">
+                  {streaming ? 'streaming…' : 'Enter to send · Shift+Enter for newline'}
                 </span>
-              )}
-            </div>
-          ))}
-          <div ref={bottomRef} />
-        </div>
-      </div>
 
-      <div className="border-t border-[--color-edge] px-6 py-4">
-        <div className="mx-auto flex max-w-3xl gap-2">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                void send()
-              }
-            }}
-            rows={1}
-            placeholder="Ask something…  (Enter to send, Shift+Enter for newline)"
-            className="flex-1 resize-none rounded-lg border border-[--color-edge] bg-[--color-panel] px-4 py-3 text-sm outline-none placeholder:text-[--color-muted] focus:border-[--color-accent]/50"
-          />
-          {streaming ? (
-            <button
-              onClick={stop}
-              className="rounded-lg border border-[--color-danger]/40 px-5 text-sm text-[--color-danger] hover:bg-[--color-danger]/10"
-            >
-              Stop
-            </button>
-          ) : (
-            <button
-              onClick={() => void send()}
-              disabled={!input.trim()}
-              className="rounded-lg bg-[--color-accent] px-5 text-sm font-medium text-[--color-ink] disabled:opacity-30"
-            >
-              Send
-            </button>
-          )}
+                {streaming ? (
+                  <button
+                    onClick={stop}
+                    aria-label="Stop generating"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-line text-muted transition-colors hover:border-danger/50 hover:text-danger"
+                  >
+                    <span className="block h-2.5 w-2.5 rounded-[2px] bg-current" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => void send()}
+                    disabled={!input.trim()}
+                    aria-label="Send message"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg bg-clay text-canvas transition-opacity disabled:opacity-25"
+                  >
+                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+                      <path
+                        d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5"
+                        stroke="currentColor"
+                        strokeWidth="1.7"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <p className="mt-2.5 text-center text-[11px] text-faint">
+              Every call is timed and measured. Telemetry ships out of band — it never blocks this
+              conversation.
+            </p>
+          </div>
         </div>
       </div>
-      </div>
+    </div>
+  )
+}
+
+/**
+ * Empty state.
+ *
+ * A serif greeting rather than a grid of suggestion cards. The cards are a
+ * product decision this project has not earned: they imply curated prompts,
+ * and there are none.
+ */
+function Welcome() {
+  return (
+    <div className="flex min-h-[52vh] flex-col items-center justify-center text-center">
+      <h1 className="font-(family-name:--font-serif) text-4xl font-normal tracking-tight text-text sm:text-[42px]">
+        What can I help with?
+      </h1>
+      <p className="mt-3.5 max-w-md text-sm leading-relaxed text-faint">
+        Ask anything. Behind the scenes every call is instrumented — latency, time to first token,
+        tokens, cost and errors land in the dashboard without slowing this down.
+      </p>
     </div>
   )
 }
