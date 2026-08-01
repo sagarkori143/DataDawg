@@ -138,6 +138,29 @@ try {
     'the batch-insert case — same millisecond, still ordered',
   )
 
+  console.log('\nQueue (optional)')
+  // pgmq is not part of core Postgres — migration 005 degrades gracefully
+  // without it. Reported rather than asserted, because a database without it
+  // is a supported configuration: the ingestion service detects it at boot and
+  // falls back to direct writes with a warning.
+  const { rows: q } = await query<{ available: boolean }>(
+    `SELECT to_regnamespace('pgmq') IS NOT NULL AS available`,
+  )
+  const pgmqOk = q[0]?.available === true
+
+  console.log(
+    pgmqOk
+      ? '  ✓ pgmq installed — INGEST_SINK=pgmq is available'
+      : '  · pgmq absent — INGEST_SINK=pgmq falls back to direct (supported)',
+  )
+
+  const { rows: mig } = await query<{ n: number }>('SELECT count(*)::int AS n FROM _migrations')
+
+  // A machine-readable line so CI can assert on this without parsing psql
+  // output or fighting shell quoting — the last attempt at that failed three
+  // times on escaping alone.
+  console.log(`\nRESULT migrations=${mig[0]!.n} pgmq=${pgmqOk}`)
+
   console.log(failures === 0 ? '\nSchema verified.\n' : `\n${failures} check(s) FAILED.\n`)
   if (failures > 0) process.exitCode = 1
 } catch (err) {

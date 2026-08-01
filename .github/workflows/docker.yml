@@ -190,35 +190,29 @@ jobs:
           docker compose up -d --build
           docker compose ps
 
-      - name: Schema exists and pgmq is live
+      - name: Schema verified by our own checker, inside the image
         run: |
-          # `docker compose up` returning 0 already proves migrations ran —
-          # the `migrate` service is gated by service_completed_successfully.
-          # What is worth asserting separately is what the migration DECIDED:
-          # migration 005 degrades gracefully when pgmq is unavailable, so
-          # without this check the stack could come up on the direct sink and
-          # the event-bus path would never be exercised while everything
-          # looked green.
           echo "--- migrate logs ---"
           docker compose logs migrate 2>&1 | tail -20 || true
 
-          echo "--- schema ---"
-          docker compose exec -T db psql -U postgres -d ollive -c "\dt" || true
+          # Run db:verify inside the migrate image rather than hand-rolling
+          # psql in shell. It is the same checker used locally, it exits
+          # non-zero on failure, and it removes an entire class of quoting and
+          # container-exec problems from the test.
+          echo "--- db:verify ---"
+          docker compose run --rm -T migrate             node packages/db/dist/cli/verify.js 2>&1 | tee /tmp/verify.txt
 
-          MIGRATIONS=$(docker compose exec -T db psql -U postgres -d ollive -tAc             "SELECT count(*) FROM _migrations" 2>/dev/null | tr -cd '0-9')
-          PGMQ=$(docker compose exec -T db psql -U postgres -d ollive -tAc             "SELECT to_regnamespace('pgmq') IS NOT NULL" 2>/dev/null | tr -cd 'tf')
+          grep -q "Schema verified" /tmp/verify.txt || {
+            echo "::error::schema verification failed inside the container"; exit 1; }
 
-          echo "migrations recorded : ${MIGRATIONS:-none}"
-          echo "pgmq available      : ${PGMQ:-unknown}"
+          # pgmq must be live, or the stack silently runs the direct sink and
+          # the event-bus path is never exercised while everything looks green.
+          grep -q "pgmq=true" /tmp/verify.txt || {
+            echo "::error::pgmq not available - queue sink would degrade to direct"
+            grep "RESULT" /tmp/verify.txt || true
+            exit 1; }
 
-          if [ "${MIGRATIONS:-0}" -lt 6 ] 2>/dev/null; then
-            echo "::error::expected at least 6 migrations, found ${MIGRATIONS:-0}"
-            exit 1
-          fi
-          if [ "$PGMQ" != "t" ]; then
-            echo "::error::pgmq missing — the queue sink would silently degrade to direct"
-            exit 1
-          fi
+          grep "RESULT" /tmp/verify.txt
 
       - name: All three services answer
         env:
