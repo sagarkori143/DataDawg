@@ -25,10 +25,31 @@ const cfgRaw = ingestServerConfig()
  *
  * Configuring `pgmq` on a Postgres without the extension would let the service
  * start, accept events, and fail on every enqueue — dropping telemetry while
- * reporting healthy. Checking once at boot and degrading to `direct` keeps the
+ * reporting healthy. Checking at boot and degrading to `direct` keeps the
  * pipeline working on any Postgres, and says so rather than doing it quietly.
+ *
+ * ── Why this retries ───────────────────────────────────────────────────────
+ * The check ran exactly once, and a single failure latched the process to
+ * `direct` for its whole life. That is the wrong shape for the question being
+ * asked: "does this database have pgmq" is a fact about the database, but a
+ * boot-time probe also fails when the database is merely slow to accept the
+ * first connection — which is normal on a cold start, and common on a managed
+ * Postgres that has just woken up.
+ *
+ * It happened in production: one unlucky deploy, and the queue was silently
+ * bypassed until someone noticed `sink: "direct"` in a stats endpoint. Five
+ * attempts over ~7s costs nothing on a healthy boot and removes the failure
+ * mode entirely.
  */
-const queueAvailable = cfgRaw.sink === 'pgmq' ? await queue.isAvailable() : false
+async function probeQueue(): Promise<boolean> {
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    if (await queue.isAvailable()) return true
+    if (attempt < 5) await new Promise((r) => setTimeout(r, attempt * 500))
+  }
+  return false
+}
+
+const queueAvailable = cfgRaw.sink === 'pgmq' ? await probeQueue() : false
 const effectiveSink = cfgRaw.sink === 'pgmq' && !queueAvailable ? 'direct' : cfgRaw.sink
 const cfg = { ...cfgRaw, sink: effectiveSink }
 const runtime = runtimeConfig()
