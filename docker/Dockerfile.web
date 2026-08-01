@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1
+#
+# ═════════════════════════════════════════════════════════════════════════════
+#  apps/web — Next.js
+# ═════════════════════════════════════════════════════════════════════════════
+#
+#  Build context is the REPO ROOT:  docker build -f docker/Dockerfile.web .
+
+FROM node:22-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY packages/config/package.json      ./packages/config/
+COPY packages/contracts/package.json   ./packages/contracts/
+COPY packages/db/package.json          ./packages/db/
+COPY packages/sdk/package.json         ./packages/sdk/
+COPY packages/providers/package.json   ./packages/providers/
+COPY packages/ingest-core/package.json ./packages/ingest-core/
+COPY apps/web/package.json             ./apps/web/
+COPY apps/dashboard/package.json       ./apps/dashboard/
+COPY apps/ingest/package.json          ./apps/ingest/
+COPY examples/zero-code/package.json   ./examples/zero-code/
+RUN npm ci
+
+FROM deps AS build
+WORKDIR /app
+COPY tsconfig.base.json tsconfig.json ./
+COPY packages ./packages
+COPY apps/web ./apps/web
+
+# Workspace packages compile to dist/ and Next resolves @ollive/* to those.
+# Without this step the build fails with "Module not found: Can't resolve
+# '@ollive/db'" — the classic monorepo container trap, invisible locally
+# because dist/ already exists there.
+RUN npm run build
+
+# Placeholders only. Next needs config to statically analyse route handlers at
+# build time; every real value is injected at runtime.
+ENV DATABASE_URL=postgresql://build:build@localhost:5432/build?sslmode=disable     ANTHROPIC_API_KEY=sk-ant-build-placeholder     INGEST_API_KEY=build-placeholder     NEXT_TELEMETRY_DISABLED=1
+RUN npm run build --workspace @ollive/web
+
+FROM node:22-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0
+USER node
+
+# The standalone bundle carries its own minimal node_modules.
+COPY --from=build --chown=node:node /app/apps/web/.next/standalone ./
+COPY --from=build --chown=node:node /app/apps/web/.next/static     ./apps/web/.next/static
+COPY --from=build --chown=node:node /app/apps/web/public           ./apps/web/public
+
+EXPOSE 3000
+
+# Direct node — npm would become PID 1 and swallow SIGTERM.
+CMD ["node", "apps/web/server.js"]

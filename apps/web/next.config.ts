@@ -39,6 +39,16 @@ const config: NextConfig = {
     '@ollive/ingest-core',
   ],
 
+  /**
+   * Standalone output for containers.
+   *
+   * Next traces the files actually reachable at runtime and emits a
+   * self-contained server — so the image carries neither the full
+   * node_modules nor the source. In a monorepo that is roughly a 10x
+   * reduction, and it depends on `outputFileTracingRoot` above being correct.
+   */
+  output: 'standalone',
+
   eslint: { ignoreDuringBuilds: true },
 }
 

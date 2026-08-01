@@ -1,0 +1,73 @@
+# syntax=docker/dockerfile:1
+#
+# ═════════════════════════════════════════════════════════════════════════════
+#  apps/ingest — the ingestion service and queue worker
+# ═════════════════════════════════════════════════════════════════════════════
+#
+#  Build context is the REPO ROOT, not apps/ingest. The app imports
+#  packages/*, and a build context scoped to the app directory cannot see them.
+#
+#      docker build -f docker/Dockerfile.ingest .
+#
+#  Multi-stage so the runtime image carries no TypeScript, no source, and no
+#  build tooling — only compiled output and production dependencies.
+
+# ── deps ─────────────────────────────────────────────────────────────────────
+FROM node:22-alpine AS deps
+WORKDIR /app
+
+# Manifests first, sources after. Docker caches layers by content, so a change
+# to application code does not invalidate `npm ci` — which is by far the
+# slowest step.
+COPY package.json package-lock.json ./
+COPY packages/config/package.json      ./packages/config/
+COPY packages/contracts/package.json   ./packages/contracts/
+COPY packages/db/package.json          ./packages/db/
+COPY packages/sdk/package.json         ./packages/sdk/
+COPY packages/providers/package.json   ./packages/providers/
+COPY packages/ingest-core/package.json ./packages/ingest-core/
+COPY apps/ingest/package.json          ./apps/ingest/
+COPY apps/web/package.json             ./apps/web/
+COPY apps/dashboard/package.json       ./apps/dashboard/
+COPY examples/zero-code/package.json   ./examples/zero-code/
+
+RUN npm ci
+
+# ── build ────────────────────────────────────────────────────────────────────
+FROM deps AS build
+WORKDIR /app
+
+COPY tsconfig.base.json tsconfig.json ./
+COPY packages ./packages
+COPY apps/ingest ./apps/ingest
+
+# `tsc -b` walks project references, so this compiles every package the
+# service depends on, in dependency order, in one command.
+RUN npx tsc -b apps/ingest
+
+# Drop dev dependencies now that compilation is done.
+RUN npm prune --omit=dev
+
+# ── runtime ──────────────────────────────────────────────────────────────────
+FROM node:22-alpine AS runtime
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+# Non-root. The `node` user ships with the base image.
+USER node
+
+COPY --from=build --chown=node:node /app/node_modules      ./node_modules
+COPY --from=build --chown=node:node /app/package.json      ./package.json
+COPY --from=build --chown=node:node /app/packages          ./packages
+COPY --from=build --chown=node:node /app/apps/ingest/dist  ./apps/ingest/dist
+
+EXPOSE 3001
+
+# `node` directly, never `npm run`.
+#
+# npm does not forward SIGTERM to its child. Wrapping this in `npm start` makes
+# npm PID 1, the signal never reaches the process, the graceful-shutdown
+# handler never fires, and every deploy silently drops whatever the SDK had
+# buffered. That is the single easiest way to undo the shutdown work.
+CMD ["node", "apps/ingest/dist/server.js"]

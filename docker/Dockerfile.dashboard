@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1
+#
+# ═════════════════════════════════════════════════════════════════════════════
+#  apps/dashboard — Next.js
+# ═════════════════════════════════════════════════════════════════════════════
+#
+#  Build context is the REPO ROOT:  docker build -f docker/Dockerfile.dashboard .
+
+FROM node:22-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY packages/config/package.json      ./packages/config/
+COPY packages/contracts/package.json   ./packages/contracts/
+COPY packages/db/package.json          ./packages/db/
+COPY packages/sdk/package.json         ./packages/sdk/
+COPY packages/providers/package.json   ./packages/providers/
+COPY packages/ingest-core/package.json ./packages/ingest-core/
+COPY apps/web/package.json             ./apps/web/
+COPY apps/dashboard/package.json       ./apps/dashboard/
+COPY apps/ingest/package.json          ./apps/ingest/
+COPY examples/zero-code/package.json   ./examples/zero-code/
+RUN npm ci
+
+FROM deps AS build
+WORKDIR /app
+COPY tsconfig.base.json tsconfig.json ./
+COPY packages ./packages
+COPY apps/dashboard ./apps/dashboard
+
+# Workspace packages compile to dist/ and Next resolves @ollive/* to those.
+# Without this step the build fails with "Module not found: Can't resolve
+# '@ollive/db'" — the classic monorepo container trap, invisible locally
+# because dist/ already exists there.
+RUN npm run build
+
+# Placeholders only. Next needs config to statically analyse route handlers at
+# build time; every real value is injected at runtime.
+ENV DATABASE_URL=postgresql://build:build@localhost:5432/build?sslmode=disable     ANTHROPIC_API_KEY=sk-ant-build-placeholder     INGEST_API_KEY=build-placeholder     NEXT_TELEMETRY_DISABLED=1
+RUN npm run build --workspace @ollive/dashboard
+
+FROM node:22-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production PORT=3002 HOSTNAME=0.0.0.0
+USER node
+
+# The standalone bundle carries its own minimal node_modules.
+COPY --from=build --chown=node:node /app/apps/dashboard/.next/standalone ./
+COPY --from=build --chown=node:node /app/apps/dashboard/.next/static     ./apps/dashboard/.next/static
+COPY --from=build --chown=node:node /app/apps/dashboard/public           ./apps/dashboard/public
+
+EXPOSE 3002
+
+# Direct node — npm would become PID 1 and swallow SIGTERM.
+CMD ["node", "apps/dashboard/server.js"]

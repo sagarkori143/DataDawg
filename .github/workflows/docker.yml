@@ -1,0 +1,150 @@
+name: Docker
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Build and publish container images.
+# ═══════════════════════════════════════════════════════════════════════════
+#
+#  The runner has Docker, so images get built and verified here even on a
+#  machine that has no container runtime. Every push proves the Dockerfiles
+#  actually work — the difference between "designed" and "built".
+#
+#  Images go to GHCR (ghcr.io), which is free for public repositories and
+#  needs no separate registry account: GITHUB_TOKEN already has permission.
+#
+#  ── Why this matters beyond containers ──────────────────────────────────
+#  The image becomes the deployable artifact. Once it exists, the same bytes
+#  run on k8s, Railway, Fly, a VM, or docker compose locally — "where it runs"
+#  stops being an architectural decision and becomes a deployment one.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      # Don't cancel the other two when one fails — knowing which of the three
+      # broke is the useful signal.
+      fail-fast: false
+      matrix:
+        app: [web, dashboard, ingest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Only authenticate for pushes. A pull request from a fork has no write
+      # access to the registry, and the build alone is what validates the PR.
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.app }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          # Repo root, not the app directory. The apps import packages/*, and a
+          # context scoped to the app cannot see them.
+          context: .
+          file: docker/Dockerfile.${{ matrix.app }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Layer cache in GitHub Actions cache. npm ci is the slow step and it
+          # only re-runs when a package.json actually changes.
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,scope=${{ matrix.app }},mode=max
+
+      - name: Report image size
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "### \`${{ matrix.app }}\`" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          docker images --format '{{.Repository}}:{{.Tag}}  {{.Size}}' \
+            | grep '${{ matrix.app }}' | head -3 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # Proves the images actually run — not just that they build. A container that
+  # builds and then crashes on start is a build that told you nothing.
+  smoke:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Ingest image starts and answers /healthz
+        run: |
+          IMAGE=${{ env.REGISTRY }}/${{ github.repository }}/ingest:sha-${{ github.sha }}
+          docker run -d --name ingest -p 3001:3001 \
+            -e DATABASE_URL='postgresql://x:x@localhost:5432/x?sslmode=disable' \
+            -e INGEST_API_KEY='smoke-test-key' \
+            "$IMAGE"
+
+          for i in $(seq 1 30); do
+            if curl -sf --max-time 2 http://localhost:3001/healthz >/dev/null; then
+              echo "healthz OK after ${i}s"
+              curl -s http://localhost:3001/healthz
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "::error::ingest container did not become healthy"
+          docker logs ingest
+          exit 1
+
+      # /healthz is deliberately dependency-free, so it answers even with no
+      # database. /readyz must NOT — it should report degraded. Asserting both
+      # is what proves the liveness/readiness split is real rather than two
+      # endpoints returning the same thing.
+      - name: Readiness reports degraded without a database
+        run: |
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 http://localhost:3001/readyz)
+          echo "readyz → HTTP $CODE"
+          if [ "$CODE" != "503" ]; then
+            echo "::error::expected 503 from /readyz with no database, got $CODE"
+            exit 1
+          fi
+
+      - name: Graceful shutdown on SIGTERM
+        run: |
+          docker stop --time 15 ingest
+          docker logs ingest 2>&1 | tail -5
+          docker inspect ingest --format 'exit code: {{.State.ExitCode}}'

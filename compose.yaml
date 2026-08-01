@@ -1,0 +1,102 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  One-command local stack.
+#
+#      cp .env.example .env     # fill in ANTHROPIC_API_KEY
+#      docker compose up
+#
+#  Brings up Postgres, runs migrations, then starts all three services.
+#  Nothing external needed — this Postgres is local, not Supabase.
+# ═══════════════════════════════════════════════════════════════════════════
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: ollive
+      POSTGRES_DB: ollive
+    ports: ['5432:5432']
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d ollive']
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # One-shot. Must complete before anything serves traffic.
+  #
+  # A separate service rather than an entrypoint step, because with multiple
+  # replicas an entrypoint would run migrations once per container. The runner
+  # takes an advisory lock so that would be safe, but "run it once" is clearer
+  # than "run it N times and rely on a lock".
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ingest
+    command: ['node', 'packages/db/dist/cli/migrate.js']
+    environment:
+      DATABASE_URL: postgres://postgres:ollive@db:5432/ollive?sslmode=disable
+    depends_on:
+      db: { condition: service_healthy }
+
+  ingest:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ingest
+    environment:
+      DATABASE_URL: postgres://postgres:ollive@db:5432/ollive?sslmode=disable
+      INGEST_API_KEY: ${INGEST_API_KEY:-dev-local-key}
+      INGEST_PORT: 3001
+      INGEST_SINK: pgmq
+      INGEST_WORKER: 'true'
+      LOG_LEVEL: info
+    ports: ['3001:3001']
+    depends_on:
+      # `service_completed_successfully`, not `service_started`. The plain form
+      # waits for the container to start, not for the schema to exist — the app
+      # then races the migration and fails on first query about half the time,
+      # which reads as flakiness rather than as a config error.
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://localhost:3001/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Matches SHUTDOWN_GRACE_MS so the SDK buffer and in-flight batches drain.
+    stop_grace_period: 15s
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    environment:
+      DATABASE_URL: postgres://postgres:ollive@db:5432/ollive?sslmode=disable
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Service DNS, not localhost. Inside the network, `ingest` resolves.
+      INGEST_ENDPOINT: http://ingest:3001
+      INGEST_API_KEY: ${INGEST_API_KEY:-dev-local-key}
+      NEXT_PUBLIC_DASHBOARD_URL: http://localhost:3002
+    ports: ['3000:3000']
+    depends_on:
+      ingest: { condition: service_healthy }
+    stop_grace_period: 15s
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dashboard
+    environment:
+      DATABASE_URL: postgres://postgres:ollive@db:5432/ollive?sslmode=disable
+      DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-}
+      NEXT_PUBLIC_CHAT_URL: http://localhost:3000
+    ports: ['3002:3002']
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    stop_grace_period: 15s
+
+volumes:
+  pgdata:
