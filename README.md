@@ -225,10 +225,18 @@ has never been run would be worse than not shipping one.
 
 ## What I'd improve with more time
 
-1. **An event bus.** The `EventBus` seam exists but ingestion writes straight to
-   Postgres. A Postgres `SKIP LOCKED` queue needs no extra infrastructure and
-   would decouple ingest latency from database latency; Kafka is the answer only
-   once volume justifies partition management.
+1. **An event bus — not built.** Ingestion `await`s the insert, so ingest
+   latency is database latency. There is no `EventBus` interface in the code
+   today; the `202 Accepted` status and the framework-free `ingest-core`
+   boundary are where one would slot in, but that is a seam by shape, not an
+   abstraction that exists.
+
+   **`pgmq` 1.5.1 is available on this Supabase project** (confirmed against the
+   live instance, not installed). It is a real message queue inside Postgres
+   with SQS semantics — visibility timeouts, archive-on-delete, long polling —
+   so it needs **zero additional infrastructure**. That, not Kafka, is the right
+   next step here: Kafka earns its operational cost when you need partitioned
+   ordering and multi-consumer replay, neither of which this workload has.
 2. **Actually run the containers.** Install Docker, verify `compose.yaml`, then
    k3d. The seams are in; only the verification is missing.
 3. **Cost accuracy for OpenAI.** Anthropic prices are from the published list;
