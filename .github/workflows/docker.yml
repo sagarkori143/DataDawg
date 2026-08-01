@@ -202,8 +202,18 @@ jobs:
           echo "--- db:verify ---"
           docker compose run --rm -T migrate             node packages/db/dist/cli/verify.js 2>&1 | tee /tmp/verify.txt
 
-          grep -q "Schema verified" /tmp/verify.txt || {
-            echo "::error::schema verification failed inside the container"; exit 1; }
+          if ! grep -q "Schema verified" /tmp/verify.txt; then
+            # Job logs are not readable without a token, but ::error::
+            # annotations are exposed by the API. Fold the output onto one
+            # line so the actual failure is visible there.
+            MSG=$(grep -E "^  (OK|.|x)? ?(×|✗|✓)|FAILED|Error|error:" /tmp/verify.txt | tail -12 | tr '
+' '~' | tr -d '' | cut -c1-900)
+            TAIL=$(tail -12 /tmp/verify.txt | tr '
+' '~' | tr -d '' | cut -c1-900)
+            echo "::error::verify failed. tail: $TAIL"
+            echo "::error::failing checks: $MSG"
+            exit 1
+          fi
 
           # pgmq must be live, or the stack silently runs the direct sink and
           # the event-bus path is never exercised while everything looks green.
