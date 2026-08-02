@@ -147,11 +147,37 @@ app.get('/readyz', async (_req, reply) => {
 // Ingestion
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Events clients discarded before delivery, since this process booted. */
+let droppedByClients = 0
+
 app.post('/v1/events', async (req, reply) => {
   if (!checkAuth(req.headers.authorization, cfg.apiKey)) {
     // 401 is non-retryable by design — the SDK trips a circuit breaker rather
     // than hammering the endpoint with a key that will still be wrong later.
     return reply.code(401).send({ error: 'invalid or missing credentials' })
+  }
+
+  /**
+   * What the client already threw away, before we ever saw it.
+   *
+   * When the SDK's buffer is full it drops the oldest event and increments a
+   * counter, which rides along on the next batch. That number is the only
+   * evidence this loss happened — the events themselves are gone, so nothing
+   * downstream can reconstruct it.
+   *
+   * It was being sent and then ignored here, which made the "loss is counted,
+   * never silent" claim true only inside the client process. Surfacing it is
+   * the difference between a metric and a comment.
+   */
+  const clientDropped = Number(
+    (req.body as { droppedSinceLastBatch?: unknown } | null)?.droppedSinceLastBatch ?? 0,
+  )
+  if (Number.isFinite(clientDropped) && clientDropped > 0) {
+    droppedByClients += clientDropped
+    req.log.warn(
+      { dropped: clientDropped, totalSinceBoot: droppedByClients },
+      'client dropped events before delivery — its buffer was full',
+    )
   }
 
   try {
@@ -223,7 +249,14 @@ app.get('/v1/queue', async (req, reply) => {
   if (!checkAuth(req.headers.authorization, cfg.apiKey)) {
     return reply.code(401).send({ error: 'invalid or missing credentials' })
   }
-  return { sink: cfg.sink, worker: worker ? worker.stats : null, queue: await queue.health() }
+  return {
+    sink: cfg.sink,
+    worker: worker ? worker.stats : null,
+    queue: await queue.health(),
+    // Non-zero means telemetry was lost at the edge — the SDK could not
+    // reach this service fast enough and its buffer overflowed.
+    droppedByClients,
+  }
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
