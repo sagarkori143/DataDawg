@@ -29,7 +29,8 @@
     "dev:dashboard": "npm run dev --workspace @ollive/dashboard",
     "db:repair": "npm run repair --workspace @ollive/db",
     "build:packages": "tsc -b packages/contracts packages/config packages/db packages/sdk packages/providers packages/ingest-core",
-    "build:packages:dashboard": "tsc -b packages/config packages/db"
+    "build:packages:dashboard": "tsc -b packages/config packages/db",
+    "queue:watch": "node examples/load/watch-queue.mjs --watch"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

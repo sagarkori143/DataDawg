@@ -96,6 +96,17 @@ That generator also asserts two guarantees on every run — idempotent replay, a
 that one malformed event cannot fail a batch of fifty. It is how the second of
 those bugs was found.
 
+To watch the queue itself rather than the charts:
+
+```bash
+npm run queue:watch                    # observe only, nothing is sent
+```
+
+It polls `/v1/queue` and draws the depth as a bar, so messages arriving and
+draining are visible in real time. `accepted: 1` only proves the service
+replied; a queue that silently never drains looks identical from outside until
+the dashboard goes flat and nobody knows why.
+
 ### Supabase users — read this
 
 Supabase's **direct** connection host (`db.<ref>.supabase.co`) publishes only an
