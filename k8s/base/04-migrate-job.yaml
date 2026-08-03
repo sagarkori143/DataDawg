@@ -1,0 +1,42 @@
+# Migrations, run once.
+#
+# A Job rather than an entrypoint step in each service. With several replicas an
+# entrypoint would run migrations once per pod. The runner takes a session
+# scoped advisory lock so that would be safe, but "run it once" is clearer than
+# "run it N times and trust a lock".
+#
+# Kubernetes has no equivalent of Compose's `depends_on: service_completed_successfully`.
+# Pods start in whatever order the scheduler picks. So this Job does the work,
+# and every application pod carries an initContainer that blocks until the
+# schema actually exists. Without that the apps race the migration and fail on
+# first query about half the time, which reads as flakiness rather than as an
+# ordering bug.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  namespace: datadawg
+spec:
+  # Four attempts. The usual reason for failure here is Postgres not accepting
+  # connections yet, which fixes itself.
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        app: migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: datadawg/ingest:local
+          imagePullPolicy: IfNotPresent
+          command: ["node", "packages/db/dist/cli/migrate.js"]
+          envFrom:
+            - configMapRef:
+                name: datadawg-config
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi

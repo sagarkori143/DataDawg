@@ -1,0 +1,107 @@
+# The ingestion API.
+#
+# INGEST_WORKER=false. These pods accept batches and put them on the queue.
+# They do not drain it. Draining is 06-worker.yaml, a separate Deployment off
+# the same image.
+#
+# The split is the whole reason that flag exists. Accepting events is a burst of
+# short CPU work and scales with client traffic. Draining the queue is steady
+# I/O and scales with backlog. Under Compose they shared a process and had to
+# scale together.
+#
+# Readiness on these pods deliberately does not check consumer lag. An API pod
+# sitting behind a lagging worker fleet is still perfectly able to accept work,
+# and pulling it out of the Service would turn a slow queue into a rejected
+# request.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingest
+  namespace: datadawg
+spec:
+  # ClusterIP. Nothing outside the cluster talks to ingestion. The SDK runs
+  # inside the web pod and reaches this by name. Use `kubectl port-forward` to
+  # poke it by hand.
+  type: ClusterIP
+  selector:
+    app: ingest
+  ports:
+    - name: http
+      port: 3001
+      targetPort: 3001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingest
+  namespace: datadawg
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ingest
+  template:
+    metadata:
+      labels:
+        app: ingest
+    spec:
+      # Longer than SHUTDOWN_GRACE_MS so the handler finishes draining in flight
+      # batches before the kubelet escalates to SIGKILL.
+      terminationGracePeriodSeconds: 20
+      initContainers:
+        - name: wait-for-schema
+          image: datadawg/ingest:local
+          imagePullPolicy: IfNotPresent
+          # verify.js exits non zero until the schema is actually correct, so
+          # looping on it is a real gate rather than a sleep. It is the same
+          # checker used in development and in CI.
+          command:
+            - sh
+            - -c
+            - |
+              until node packages/db/dist/cli/verify.js; do
+                echo "schema not ready, retrying in 3s"
+                sleep 3
+              done
+          envFrom:
+            - configMapRef:
+                name: datadawg-config
+      containers:
+        - name: ingest
+          image: datadawg/ingest:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3001
+          env:
+            - name: INGEST_WORKER
+              value: "false"
+          envFrom:
+            - configMapRef:
+                name: datadawg-config
+            - secretRef:
+                name: datadawg-secrets
+          # Liveness is dependency free on purpose. If it checked the database,
+          # a brief Postgres blip would restart every healthy pod in the fleet
+          # at the exact moment the database is already struggling.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # Readiness does check the database, so a pod that cannot serve is
+          # pulled out of the Service instead of being sent traffic to fail.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 3001
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              memory: 512Mi

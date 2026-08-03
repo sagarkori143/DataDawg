@@ -1,0 +1,86 @@
+# The dashboard.
+#
+# A separate Deployment with its own database connection, not a route inside the
+# chat app. Killing this leaves chat untouched, which is the property worth
+# having: an observability UI that can take down the thing it observes is worse
+# than no observability UI.
+#
+# In a real cluster this would get a DATABASE_URL for a read only role, or one
+# pointed at a replica, so dashboard queries stop competing with chat for the
+# primary's connections. The SQL for that role is in docs/deployment.md.
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard
+  namespace: datadawg
+spec:
+  type: LoadBalancer
+  selector:
+    app: dashboard
+  ports:
+    - name: http
+      port: 3002
+      targetPort: 3002
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  namespace: datadawg
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard
+  template:
+    metadata:
+      labels:
+        app: dashboard
+    spec:
+      terminationGracePeriodSeconds: 20
+      initContainers:
+        - name: wait-for-schema
+          image: datadawg/ingest:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              until node packages/db/dist/cli/verify.js; do
+                echo "schema not ready, retrying in 3s"
+                sleep 3
+              done
+          envFrom:
+            - configMapRef:
+                name: datadawg-config
+      containers:
+        - name: dashboard
+          image: datadawg/dashboard:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3002
+          envFrom:
+            - configMapRef:
+                name: datadawg-config
+            - secretRef:
+                name: datadawg-secrets
+          livenessProbe:
+            httpGet:
+              path: /api/healthz
+              port: 3002
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/readyz
+              port: 3002
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 768Mi

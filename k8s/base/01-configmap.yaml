@@ -1,0 +1,39 @@
+# Non secret configuration.
+#
+# Everything here is safe to commit. API keys live in the Secret next door.
+# Nothing in the codebase reads process.env outside packages/config, so this
+# ConfigMap plus the Secret is the complete runtime surface.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: datadawg-config
+  namespace: datadawg
+data:
+  # Service DNS, not localhost. Inside the cluster `db` resolves to the
+  # headless Service in front of the Postgres StatefulSet.
+  DATABASE_URL: postgres://postgres:ollive@db:5432/ollive?sslmode=disable
+
+  # The local Postgres presents no managed certificate chain, so strict
+  # verification would fail. The connection is plaintext inside the cluster.
+  DATABASE_SSL_STRICT: "false"
+
+  # A pool is a per process object. Several replicas times a large pool is how
+  # you exhaust a database that looked comfortable in development.
+  DATABASE_POOL_MAX: "5"
+
+  # Where the SDK ships events. The web pod reaches the ingest Service by name.
+  INGEST_ENDPOINT: http://ingest:3001
+
+  # The queue path, not the direct one. A database blip queues work instead of
+  # returning 503 at the ingestion endpoint.
+  INGEST_SINK: pgmq
+
+  INGEST_PORT: "3001"
+  INGEST_HOST: 0.0.0.0
+
+  # Must stay below terminationGracePeriodSeconds, or the kubelet sends SIGKILL
+  # while the transport is still draining and the buffered events are lost.
+  SHUTDOWN_GRACE_MS: "10000"
+
+  LOG_LEVEL: info
+  NODE_ENV: production

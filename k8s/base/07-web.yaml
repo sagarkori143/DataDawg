@@ -1,0 +1,92 @@
+# The chat app, and the SDK inside it.
+#
+# There is no separate deployment for the SDK and there cannot be one. It is a
+# library running in this pod's process. Wherever this Deployment runs, the
+# instrumentation is already there. That is what makes it a wrapper rather than
+# a sidecar or a node agent.
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: datadawg
+spec:
+  # LoadBalancer, which Docker Desktop maps to localhost. On a cluster without
+  # a load balancer controller this stays Pending and you reach it with
+  # `kubectl port-forward svc/web 3000:3000` instead.
+  type: LoadBalancer
+  selector:
+    app: web
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: datadawg
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      # The SDK buffers events in memory and flushes on SIGTERM. Cutting the pod
+      # off before that drain finishes throws away up to one flush interval of
+      # telemetry on every rollout, which looks like a small traffic dip rather
+      # than a bug.
+      terminationGracePeriodSeconds: 20
+      initContainers:
+        # The ingest image, not the web image. The web image is a Next.js
+        # standalone bundle and does not carry packages/db/dist/cli, so it has
+        # no way to check the schema itself.
+        - name: wait-for-schema
+          image: datadawg/ingest:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              until node packages/db/dist/cli/verify.js; do
+                echo "schema not ready, retrying in 3s"
+                sleep 3
+              done
+          envFrom:
+            - configMapRef:
+                name: datadawg-config
+      containers:
+        - name: web
+          image: datadawg/web:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: datadawg-config
+            - secretRef:
+                name: datadawg-secrets
+          livenessProbe:
+            httpGet:
+              path: /api/healthz
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/readyz
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              memory: 768Mi

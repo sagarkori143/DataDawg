@@ -1,0 +1,85 @@
+# Laptop overlay.
+#
+#     kubectl apply -k k8s/base/            production shape
+#     kubectl apply -k k8s/overlays/local/  what fits on a developer machine
+#
+# The base manifests are written for a real cluster: two web pods, two ingest
+# pods, and memory requests with headroom. A Docker Desktop kind cluster gets
+# whatever the Docker VM was given, and the control plane takes roughly 2 GB of
+# that before a single application pod is scheduled.
+#
+# Editing the base to fit a laptop would be the wrong fix. It would make the
+# committed manifests describe a machine nobody deploys to, and the replica
+# count is part of what the base is demonstrating. So the laptop constraints
+# live here, where they are visibly a local concession rather than the design.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: datadawg
+
+resources:
+  - ../../base
+
+# One of each. The split between the ingest API and the worker still holds and
+# is still the thing worth showing. Two replicas of each would only prove the
+# scheduler can count, and on this budget it cannot.
+replicas:
+  - name: web
+    count: 1
+  - name: ingest
+    count: 1
+
+# Requests are what the scheduler reserves, not what a pod uses. The base values
+# leave headroom for real traffic. Here they are cut to roughly observed idle
+# usage so everything actually fits, at the cost of no room to absorb a spike.
+patches:
+  - target:
+      kind: Deployment
+      name: web
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 160Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 100m
+  - target:
+      kind: Deployment
+      name: dashboard
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 160Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 50m
+  - target:
+      kind: Deployment
+      name: ingest
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 128Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 50m
+  - target:
+      kind: Deployment
+      name: worker
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 128Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 50m
+  - target:
+      kind: StatefulSet
+      name: db
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 192Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 50m

@@ -1,0 +1,87 @@
+# Postgres, with pgmq.
+#
+# A StatefulSet rather than a Deployment. A Deployment's pods are
+# interchangeable and its rollout can run two of them at once, which for a
+# database means two processes opening the same data directory. A StatefulSet
+# gives a stable name, a stable volume, and one pod at a time.
+#
+# Not postgres:alpine. That image has no pgmq, and the queue sink needs it.
+# This is the upstream pgmq distribution: plain Postgres 17 with the extension
+# available. The migration degrades gracefully without it, but then the stack
+# would silently run the direct sink and the queue path would never execute.
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: datadawg
+spec:
+  # Headless. Nothing needs to load balance across one database, and a stable
+  # DNS name for the pod is what the StatefulSet wants.
+  clusterIP: None
+  selector:
+    app: db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db
+  namespace: datadawg
+spec:
+  serviceName: db
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+        - name: postgres
+          image: quay.io/tembo/pg17-pgmq:latest
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_PASSWORD
+              value: ollive
+            - name: POSTGRES_DB
+              value: ollive
+            # The image mounts the volume at /var/lib/postgresql/data, and
+            # Postgres refuses to initialise into a non empty directory. A
+            # subdirectory keeps it clear of anything the volume arrives with.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "ollive"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "ollive"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: pgdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

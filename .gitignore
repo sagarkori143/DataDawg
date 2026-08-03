@@ -18,3 +18,8 @@ Thumbs.db
 
 .vercel
 coverage/
+
+# Real cluster credentials. k8s/base/02-secret.example.yaml is the committed
+# template; the filled-in copy must never be committed.
+k8s/secret.yaml
+k8s/**/secret.yaml
